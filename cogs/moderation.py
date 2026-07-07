@@ -1,39 +1,90 @@
-import discord
-from discord import app_commands
-from discord.ext import commands
 import asyncio
 import datetime
-import time
 import os
+import sqlite3
+import time
+
+import discord
 import psutil
+from discord import app_commands
+from discord.ext import commands
+
 
 class Moderation(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.log_channel_id = 1393450057189167234
         self.allowed_say_roles = [1372448974211911770, 1359359923770757150, 1361138268829253875]
+        self.db_path = os.path.join(os.path.dirname(__file__), "..", "moderation.db")
+        self.initialize_database()
+        self.bot.loop.create_task(self.restore_sanctions())
 
     # --- INTERNAL UTILITY METHODS ---
     def has_say_role(self, user: discord.Member) -> bool:
         return any(role.id in self.allowed_say_roles for role in user.roles)
 
-    async def send_log(self, guild, action, target, moderator, reason, duration=None):
+    def initialize_database(self):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS moderation_actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                moderator_id INTEGER NOT NULL,
+                reason TEXT,
+                duration_seconds INTEGER,
+                expires_at TEXT,
+                active INTEGER DEFAULT 1,
+                created_at TEXT NOT NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS user_warnings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                moderator_id INTEGER NOT NULL,
+                reason TEXT,
+                created_at TEXT NOT NULL
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+    async def get_log_channel(self, guild):
         try:
             channel = guild.get_channel(self.log_channel_id)
-            if not channel: 
-                print(f"Log channel with ID {self.log_channel_id} not found.")
+            if channel:
+                return channel
+        except Exception:
+            pass
+        return guild.system_channel
+
+    async def send_log(self, guild, action, target, moderator, reason, duration=None, extra=None):
+        try:
+            channel = await self.get_log_channel(guild)
+            if not channel:
                 return
-            
-            embed = discord.Embed(title=f"Registro de Moderacion: {action}", color=discord.Color.dark_red())
+
+            embed = discord.Embed(title=f"Registro de Moderación: {action}", color=discord.Color.dark_red())
             embed.add_field(name="Usuario afectado", value=str(target), inline=False)
             embed.add_field(name="Moderador responsable", value=str(moderator), inline=False)
             if duration:
-                embed.add_field(name="Duracion asignada", value=str(duration), inline=False)
-            embed.add_field(name="Motivo", value=reason, inline=False)
+                embed.add_field(name="Duración", value=str(duration), inline=False)
+            embed.add_field(name="Motivo", value=reason or "No especificado", inline=False)
+            if extra:
+                embed.add_field(name="Detalle", value=str(extra), inline=False)
             embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
             await channel.send(embed=embed)
         except Exception as e:
             print(f"Failed to send moderation log to Discord: {e}")
+
+    async def send_embed_reply(self, destination, title, description, color=discord.Color.gold()):
+        embed = discord.Embed(title=title, description=description, color=color)
+        embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
+        await destination.send(embed=embed)
 
     def parse_duration(self, duration_input):
         if duration_input is None:
@@ -77,6 +128,127 @@ class Moderation(commands.Cog):
 
         raise ValueError("Formato inválido. Usa ejemplos como 5s, 5m, 5h, 5d, 5ms o 5a")
 
+    def get_member_from_input(self, guild, user_input):
+        if not user_input or user_input == "@everyone":
+            return None
+        clean_id = user_input.replace("<@", "").replace(">", "").replace("!", "")
+        try:
+            return guild.get_member(int(clean_id))
+        except ValueError:
+            return None
+
+    def store_action(self, guild_id, user_id, action, moderator_id, reason, duration_seconds=None, expires_at=None):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO moderation_actions (guild_id, user_id, action, moderator_id, reason, duration_seconds, expires_at, active, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
+            """,
+            (guild_id, user_id, action, moderator_id, reason, duration_seconds, expires_at, datetime.datetime.now(datetime.timezone.utc).isoformat())
+        )
+        conn.commit()
+        conn.close()
+
+    def deactivate_action(self, guild_id, user_id, action):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE moderation_actions SET active = 0 WHERE guild_id = ? AND user_id = ? AND action = ? AND active = 1",
+            (guild_id, user_id, action)
+        )
+        conn.commit()
+        conn.close()
+
+    async def notify_sanction(self, member, action, moderator, reason, duration_text=None):
+        if not member:
+            return
+        try:
+            embed = discord.Embed(title=f"📢 Has recibido una sanción: {action}", color=discord.Color.orange())
+            embed.add_field(name="Moderador", value=str(moderator), inline=False)
+            embed.add_field(name="Motivo", value=reason or "No especificado", inline=False)
+            embed.add_field(name="Duración", value=duration_text or "Permanente", inline=False)
+            embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
+            await member.send(embed=embed)
+        except Exception:
+            pass
+
+    async def schedule_action_expiration(self, guild, user_id, action, duration_seconds):
+        if duration_seconds is None or duration_seconds <= 0:
+            return
+        await asyncio.sleep(duration_seconds)
+        try:
+            if action == "ban":
+                user = await self.bot.fetch_user(user_id)
+                await guild.unban(user, reason="Periodo de sanción concluido.")
+                self.deactivate_action(guild.id, user_id, action)
+                await self.send_log(guild, "Desbaneo automático", user, self.bot.user, "Periodo de sanción concluido.")
+            elif action == "mute":
+                member = guild.get_member(user_id)
+                if member:
+                    await member.timeout(None, reason="Periodo de sanción concluido.")
+                self.deactivate_action(guild.id, user_id, action)
+                if member:
+                    await self.send_log(guild, "Fin de aislamiento automático", member, self.bot.user, "Periodo de sanción concluido.")
+        except (discord.NotFound, discord.Forbidden):
+            self.deactivate_action(guild.id, user_id, action)
+
+    async def restore_sanctions(self):
+        await self.bot.wait_until_ready()
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT guild_id, user_id, action, moderator_id, reason, duration_seconds, expires_at FROM moderation_actions WHERE active = 1")
+        rows = cursor.fetchall()
+        conn.close()
+
+        now = datetime.datetime.now(datetime.timezone.utc)
+        for guild_id, user_id, action, moderator_id, reason, duration_seconds, expires_at in rows:
+            guild = self.bot.get_guild(guild_id)
+            if not guild:
+                continue
+            if expires_at:
+                expires_dt = datetime.datetime.fromisoformat(expires_at)
+                if expires_dt <= now:
+                    self.deactivate_action(guild.id, user_id, action)
+                    continue
+                delay = max(0, (expires_dt - now).total_seconds())
+                asyncio.create_task(self.schedule_action_expiration(guild, user_id, action, delay))
+                if action == "ban":
+                    try:
+                        await guild.ban(discord.Object(id=user_id), reason=reason or "Sanción restaurada")
+                    except discord.HTTPException:
+                        pass
+                elif action == "mute":
+                    member = guild.get_member(user_id)
+                    if member:
+                        timeout_duration = datetime.timedelta(seconds=max(0, int((expires_dt - now).total_seconds())))
+                        await member.timeout(timeout_duration, reason=reason or "Sanción restaurada")
+            else:
+                if action == "ban":
+                    try:
+                        await guild.ban(discord.Object(id=user_id), reason=reason or "Sanción restaurada")
+                    except discord.HTTPException:
+                        pass
+
+    def warn_user(self, guild_id, user_id, moderator_id, reason, amount=1):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        for _ in range(amount):
+            cursor.execute(
+                "INSERT INTO user_warnings (guild_id, user_id, moderator_id, reason, created_at) VALUES (?, ?, ?, ?, ?)",
+                (guild_id, user_id, moderator_id, reason, datetime.datetime.now(datetime.timezone.utc).isoformat())
+            )
+        conn.commit()
+        conn.close()
+
+    def get_user_warnings(self, guild_id, user_id):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT moderator_id, reason, created_at FROM user_warnings WHERE guild_id = ? AND user_id = ? ORDER BY id DESC", (guild_id, user_id))
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+
     async def execute_clean(self, channel, amount: int):
         if amount <= 0:
             return "Error: La cantidad de mensajes debe ser mayor a cero."
@@ -92,46 +264,40 @@ class Moderation(commands.Cog):
     @app_commands.rename(user_input="miembro", reason="motivo")
     @discord.app_commands.checks.has_permissions(kick_members=True)
     async def kick_slash(self, interaction: discord.Interaction, user_input: str, reason: str = "No especificada"):
-        clean_id = user_input.replace("<@", "").replace(">", "").replace("!", "")
-        member = interaction.guild.get_member(int(clean_id)) if user_input != "@everyone" else "@everyone"
-        
-        if member == "@everyone" or not isinstance(member, discord.Member):
-            await interaction.response.send_message("Error: Debe mencionar a un miembro valido del servidor.")
+        member = self.get_member_from_input(interaction.guild, user_input)
+        if not isinstance(member, discord.Member):
+            await interaction.response.send_message(embed=discord.Embed(title="⚠️ Error", description="Debe mencionar a un miembro válido del servidor.", color=discord.Color.red()))
             return
-        
+
         await member.kick(reason=reason)
-        await self.send_log(interaction.guild, "Expulsion", member, interaction.user, reason)
-        await interaction.response.send_message(f"El usuario {member} ha sido expulsado correctamente.")
+        self.store_action(interaction.guild.id, member.id, "kick", interaction.user.id, reason)
+        await self.send_log(interaction.guild, "Expulsión", member, interaction.user, reason)
+        await self.notify_sanction(member, "Expulsión", interaction.user, reason)
+        await interaction.response.send_message(embed=discord.Embed(title="✅ Acción ejecutada", description=f"El usuario {member} fue expulsado.\nMotivo: {reason}", color=discord.Color.green()))
 
     @app_commands.command(name="ban", description="Banea a un miembro del servidor.")
     @app_commands.rename(user_input="miembro", duration_input="tiempo", reason="motivo")
     @discord.app_commands.checks.has_permissions(ban_members=True)
     async def ban_slash(self, interaction: discord.Interaction, user_input: str, duration_input: str, reason: str = "No especificada"):
-        clean_id = user_input.replace("<@", "").replace(">", "").replace("!", "")
-        member = interaction.guild.get_member(int(clean_id)) if user_input != "@everyone" else "@everyone"
-        
-        if member == "@everyone" or not isinstance(member, discord.Member):
-            await interaction.response.send_message("Error: Debe mencionar a un miembro valido del servidor.")
+        member = self.get_member_from_input(interaction.guild, user_input)
+        if not isinstance(member, discord.Member):
+            await interaction.response.send_message(embed=discord.Embed(title="⚠️ Error", description="Debe mencionar a un miembro válido del servidor.", color=discord.Color.red()))
             return
 
         try:
             duration_seconds, duration_text = self.parse_duration(duration_input)
         except ValueError as error:
-            await interaction.response.send_message(f"Error: {error}")
+            await interaction.response.send_message(embed=discord.Embed(title="⚠️ Error", description=str(error), color=discord.Color.red()))
             return
 
         await interaction.guild.ban(member, reason=reason)
-        await self.send_log(interaction.guild, "Baneo Temporal", member, interaction.user, reason, f"{duration_text}")
-        await interaction.response.send_message(f"El usuario {member} ha sido baneado por {duration_text}.")
-        
-        async def automatic_unban():
-            await asyncio.sleep(duration_seconds)
-            try:
-                await interaction.guild.unban(member, reason="Expiracion del periodo de baneo establecido.")
-                await self.send_log(interaction.guild, "Desbaneo Automatico", member, self.bot.user, "Periodo de sancion concluido.")
-            except (discord.NotFound, discord.Forbidden):
-                print(f"Automatic unban failed or user already unbanned: {member.id}")
-        asyncio.create_task(automatic_unban())
+        expires_at = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=duration_seconds)).isoformat()
+        self.store_action(interaction.guild.id, member.id, "ban", interaction.user.id, reason, duration_seconds, expires_at)
+        await self.send_log(interaction.guild, "Baneo temporal", member, interaction.user, reason, f"{duration_text}")
+        await self.notify_sanction(member, "Baneo", interaction.user, reason, duration_text)
+        embed = discord.Embed(title="✅ Acción ejecutada", description=f"El usuario {member} fue baneado por {duration_text}.\nMotivo: {reason}", color=discord.Color.green())
+        await interaction.response.send_message(embed=embed)
+        asyncio.create_task(self.schedule_action_expiration(interaction.guild, member.id, "ban", duration_seconds))
 
     @app_commands.command(name="unban", description="Remueve el baneo de un usuario mediante su ID.")
     @app_commands.rename(user_id="id_usuario", reason="motivo")
@@ -139,48 +305,81 @@ class Moderation(commands.Cog):
     async def unban_slash(self, interaction: discord.Interaction, user_id: str, reason: str = "No especificada"):
         target_user = await self.bot.fetch_user(int(user_id))
         await interaction.guild.unban(target_user, reason=reason)
+        self.deactivate_action(interaction.guild.id, target_user.id, "ban")
         await self.send_log(interaction.guild, "Desbaneo", target_user, interaction.user, reason)
-        await interaction.response.send_message(f"El baneo aplicado a la ID {user_id} ha sido revocado.")
+        await interaction.response.send_message(embed=discord.Embed(title="✅ Acción ejecutada", description=f"El baneo aplicado a la ID {user_id} fue revocado.\nMotivo: {reason}", color=discord.Color.green()))
 
     @app_commands.command(name="mute", description="Silencia a un miembro (Timeout).")
     @app_commands.rename(user_input="miembro", duration_input="tiempo", reason="motivo")
     @discord.app_commands.checks.has_permissions(moderate_members=True)
     async def mute_slash(self, interaction: discord.Interaction, user_input: str, duration_input: str, reason: str = "No especificada"):
-        clean_id = user_input.replace("<@", "").replace(">", "").replace("!", "")
-        member = interaction.guild.get_member(int(clean_id)) if user_input != "@everyone" else "@everyone"
-        
-        if member == "@everyone" or not isinstance(member, discord.Member):
-            await interaction.response.send_message("Error: Debe mencionar a un miembro valido del servidor.")
+        member = self.get_member_from_input(interaction.guild, user_input)
+        if not isinstance(member, discord.Member):
+            await interaction.response.send_message(embed=discord.Embed(title="⚠️ Error", description="Debe mencionar a un miembro válido del servidor.", color=discord.Color.red()))
             return
 
         try:
             duration_seconds, duration_text = self.parse_duration(duration_input)
         except ValueError as error:
-            await interaction.response.send_message(f"Error: {error}")
+            await interaction.response.send_message(embed=discord.Embed(title="⚠️ Error", description=str(error), color=discord.Color.red()))
             return
 
         if duration_seconds > 28 * 24 * 60 * 60:
-            await interaction.response.send_message("Error: El timeout máximo permitido por Discord es de 28 días.")
+            await interaction.response.send_message(embed=discord.Embed(title="⚠️ Error", description="El timeout máximo permitido por Discord es de 28 días.", color=discord.Color.red()))
             return
 
         timeout_duration = datetime.timedelta(seconds=duration_seconds)
         await member.timeout(timeout_duration, reason=reason)
-        await self.send_log(interaction.guild, "Aislamiento (Mute)", member, interaction.user, reason, f"{duration_text}")
-        await interaction.response.send_message(f"El usuario {member} ha sido silenciado por {duration_text}.")
+        expires_at = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=duration_seconds)).isoformat()
+        self.store_action(interaction.guild.id, member.id, "mute", interaction.user.id, reason, duration_seconds, expires_at)
+        await self.send_log(interaction.guild, "Aislamiento (mute)", member, interaction.user, reason, f"{duration_text}")
+        await self.notify_sanction(member, "Mute", interaction.user, reason, duration_text)
+        embed = discord.Embed(title="✅ Acción ejecutada", description=f"El usuario {member} fue silenciado por {duration_text}.\nMotivo: {reason}", color=discord.Color.green())
+        await interaction.response.send_message(embed=embed)
+        asyncio.create_task(self.schedule_action_expiration(interaction.guild, member.id, "mute", duration_seconds))
 
     @app_commands.command(name="unmute", description="Quita el silencio a un miembro del servidor.")
     @app_commands.rename(member="miembro", reason="motivo")
     @discord.app_commands.checks.has_permissions(moderate_members=True)
     async def unmute_slash(self, interaction: discord.Interaction, member: discord.Member, reason: str = "No especificada"):
         await member.timeout(None, reason=reason)
-        await self.send_log(interaction.guild, "Fin de Aislamiento (Unmute)", member, interaction.user, reason)
-        await interaction.response.send_message(f"Se ha revocado la restriccion de silencio aplicada al usuario {member}.")
+        self.deactivate_action(interaction.guild.id, member.id, "mute")
+        await self.send_log(interaction.guild, "Fin de aislamiento (unmute)", member, interaction.user, reason)
+        await interaction.response.send_message(embed=discord.Embed(title="✅ Acción ejecutada", description=f"Se ha revocado la restricción de silencio para {member}.\nMotivo: {reason}", color=discord.Color.green()))
 
-    @app_commands.command(name="say", description="Replica un texto a traves del bot.")
+    @app_commands.command(name="warn", description="Agrega advertencias a un usuario y muestra su total.")
+    @app_commands.rename(user_input="usuario", warning_count="cantidad", reason="motivo")
+    @discord.app_commands.checks.has_permissions(moderate_members=True)
+    async def warn_slash(self, interaction: discord.Interaction, user_input: discord.Member, warning_count: int, reason: str = "No especificada"):
+        if warning_count <= 0:
+            await interaction.response.send_message(embed=discord.Embed(title="⚠️ Error", description="La cantidad debe ser mayor a cero.", color=discord.Color.red()))
+            return
+        self.warn_user(interaction.guild.id, user_input.id, interaction.user.id, reason, warning_count)
+        warnings = self.get_user_warnings(interaction.guild.id, user_input.id)
+        total = len(warnings)
+        await self.send_log(interaction.guild, "Advertencia", user_input, interaction.user, reason, extra=f"Total actual: {total}")
+        embed = discord.Embed(title="⚠️ Advertencia registrada", description=f"Se añadieron {warning_count} advertencia(s) a {user_input.mention}.\nMotivo: {reason}", color=discord.Color.orange())
+        embed.add_field(name="Total actual", value=str(total), inline=False)
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="warns", description="Muestra las advertencias de un usuario.")
+    @app_commands.rename(user_input="usuario")
+    async def warns_slash(self, interaction: discord.Interaction, user_input: discord.Member):
+        warnings = self.get_user_warnings(interaction.guild.id, user_input.id)
+        embed = discord.Embed(title=f"⚠️ Warns de {user_input.display_name}", color=discord.Color.orange())
+        embed.add_field(name="Total", value=str(len(warnings)), inline=False)
+        if warnings:
+            history = "\n".join(f"• {idx + 1}. {row[1]} (por {self.bot.get_user(row[0]) or row[0]} el {row[2]})" for idx, row in enumerate(warnings))
+            embed.add_field(name="Historial", value=history[:1024], inline=False)
+        else:
+            embed.add_field(name="Historial", value="Sin advertencias registradas.", inline=False)
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="say", description="Replica un texto a través del bot.")
     @app_commands.rename(text_content="mensaje")
     async def say_slash(self, interaction: discord.Interaction, text_content: str, embed: bool = False):
         if not self.has_say_role(interaction.user):
-            await interaction.response.send_message("Error: No cuenta con los roles requeridos para utilizar este comando.", ephemeral=True)
+            await interaction.response.send_message(embed=discord.Embed(title="⚠️ Error", description="No cuenta con los roles requeridos para utilizar este comando.", color=discord.Color.red()), ephemeral=True)
             return
         if embed:
             sent_embed = discord.Embed(description=text_content, color=discord.Color.yellow())
@@ -189,7 +388,7 @@ class Moderation(commands.Cog):
             return
         await interaction.response.send_message(text_content)
 
-    @app_commands.command(name="clean", description="Elimina una cantidad especifica de mensajes.")
+    @app_commands.command(name="clean", description="Elimina una cantidad específica de mensajes.")
     @app_commands.rename(amount="mensajes")
     @discord.app_commands.checks.has_permissions(manage_messages=True)
     async def clean_slash(self, interaction: discord.Interaction, amount: int):
@@ -205,89 +404,118 @@ class Moderation(commands.Cog):
     @commands.command(name="kick")
     @commands.has_permissions(kick_members=True)
     async def kick_prefix(self, ctx, user_input: str, *, reason: str = "No especificada"):
-        clean_id = user_input.replace("<@", "").replace(">", "").replace("!", "")
-        member = ctx.guild.get_member(int(clean_id)) if user_input != "@everyone" else "@everyone"
-        
-        if member == "@everyone" or not isinstance(member, discord.Member):
-            await ctx.send("Error: Debe mencionar a un miembro valido del servidor.")
+        member = self.get_member_from_input(ctx.guild, user_input)
+        if not isinstance(member, discord.Member):
+            await ctx.send(embed=discord.Embed(title="⚠️ Error", description="Debe mencionar a un miembro válido del servidor.", color=discord.Color.red()))
             return
         await member.kick(reason=reason)
-        await self.send_log(ctx.guild, "Expulsion", member, ctx.author, reason)
-        await ctx.send(f"El usuario {member} ha sido expulsado correctamente.")
+        self.store_action(ctx.guild.id, member.id, "kick", ctx.author.id, reason)
+        await self.send_log(ctx.guild, "Expulsión", member, ctx.author, reason)
+        await self.notify_sanction(member, "Expulsión", ctx.author, reason)
+        await ctx.send(embed=discord.Embed(title="✅ Acción ejecutada", description=f"El usuario {member} fue expulsado.\nMotivo: {reason}", color=discord.Color.green()))
 
     @commands.command(name="ban")
     @commands.has_permissions(ban_members=True)
     async def ban_prefix(self, ctx, user_input: str, duration_input: str, *, reason: str = "No especificada"):
-        clean_id = user_input.replace("<@", "").replace(">", "").replace("!", "")
-        member = ctx.guild.get_member(int(clean_id)) if user_input != "@everyone" else "@everyone"
-        
-        if member == "@everyone" or not isinstance(member, discord.Member):
-            await ctx.send("Error: Debe mencionar a un miembro valido del servidor.")
+        member = self.get_member_from_input(ctx.guild, user_input)
+        if not isinstance(member, discord.Member):
+            await ctx.send(embed=discord.Embed(title="⚠️ Error", description="Debe mencionar a un miembro válido del servidor.", color=discord.Color.red()))
             return
 
         try:
             duration_seconds, duration_text = self.parse_duration(duration_input)
         except ValueError as error:
-            await ctx.send(f"Error: {error}")
+            await ctx.send(embed=discord.Embed(title="⚠️ Error", description=str(error), color=discord.Color.red()))
             return
-            
+
         await ctx.guild.ban(member, reason=reason)
-        await self.send_log(ctx.guild, "Baneo Temporal", member, ctx.author, reason, f"{duration_text}")
-        await ctx.send(f"El usuario {member} ha sido baneado por un periodo de {duration_text}.")
-        
-        async def automatic_unban():
-            await asyncio.sleep(duration_seconds)
-            try:
-                await ctx.guild.unban(member, reason="Expiracion del periodo de baneo establecido.")
-                await self.send_log(ctx.guild, "Desbaneo Automatico", member, self.bot.user, "Periodo de sancion concluido.")
-            except (discord.NotFound, discord.Forbidden):
-                print(f"Automatic unban failed or user already unbanned: {member.id}")
-        asyncio.create_task(automatic_unban())
+        expires_at = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=duration_seconds)).isoformat()
+        self.store_action(ctx.guild.id, member.id, "ban", ctx.author.id, reason, duration_seconds, expires_at)
+        await self.send_log(ctx.guild, "Baneo temporal", member, ctx.author, reason, f"{duration_text}")
+        await self.notify_sanction(member, "Baneo", ctx.author, reason, duration_text)
+        await ctx.send(embed=discord.Embed(title="✅ Acción ejecutada", description=f"El usuario {member} fue baneado por {duration_text}.\nMotivo: {reason}", color=discord.Color.green()))
+        asyncio.create_task(self.schedule_action_expiration(ctx.guild, member.id, "ban", duration_seconds))
 
     @commands.command(name="unban")
     @commands.has_permissions(ban_members=True)
     async def unban_prefix(self, ctx, user_id: str, *, reason: str = "No especificada"):
         target_user = await self.bot.fetch_user(int(user_id))
         await ctx.guild.unban(target_user, reason=reason)
+        self.deactivate_action(ctx.guild.id, target_user.id, "ban")
         await self.send_log(ctx.guild, "Desbaneo", target_user, ctx.author, reason)
-        await ctx.send(f"El baneo aplicado a la ID {user_id} ha sido revocado.")
+        await ctx.send(embed=discord.Embed(title="✅ Acción ejecutada", description=f"El baneo aplicado a la ID {user_id} fue revocado.\nMotivo: {reason}", color=discord.Color.green()))
 
     @commands.command(name="mute")
     @commands.has_permissions(moderate_members=True)
     async def mute_prefix(self, ctx, user_input: str, duration_input: str, *, reason: str = "No especificada"):
-        clean_id = user_input.replace("<@", "").replace(">", "").replace("!", "")
-        member = ctx.guild.get_member(int(clean_id)) if user_input != "@everyone" else "@everyone"
-        
-        if member == "@everyone" or not isinstance(member, discord.Member):
-            await ctx.send("Error: Debe mencionar a un miembro valido del servidor.")
+        member = self.get_member_from_input(ctx.guild, user_input)
+        if not isinstance(member, discord.Member):
+            await ctx.send(embed=discord.Embed(title="⚠️ Error", description="Debe mencionar a un miembro válido del servidor.", color=discord.Color.red()))
             return
 
         try:
             duration_seconds, duration_text = self.parse_duration(duration_input)
         except ValueError as error:
-            await ctx.send(f"Error: {error}")
+            await ctx.send(embed=discord.Embed(title="⚠️ Error", description=str(error), color=discord.Color.red()))
             return
-            
+
         if duration_seconds > 28 * 24 * 60 * 60:
-            await ctx.send("Error: El timeout máximo permitido por Discord es de 28 días.")
+            await ctx.send(embed=discord.Embed(title="⚠️ Error", description="El timeout máximo permitido por Discord es de 28 días.", color=discord.Color.red()))
             return
 
         timeout_duration = datetime.timedelta(seconds=duration_seconds)
         await member.timeout(timeout_duration, reason=reason)
-        await self.send_log(ctx.guild, "Aislamiento (Mute)", member, ctx.author, reason, f"{duration_text}")
-        await ctx.send(f"El usuario {member} ha sido silenciado por un periodo de {duration_text}.")
+        expires_at = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=duration_seconds)).isoformat()
+        self.store_action(ctx.guild.id, member.id, "mute", ctx.author.id, reason, duration_seconds, expires_at)
+        await self.send_log(ctx.guild, "Aislamiento (mute)", member, ctx.author, reason, f"{duration_text}")
+        await self.notify_sanction(member, "Mute", ctx.author, reason, duration_text)
+        await ctx.send(embed=discord.Embed(title="✅ Acción ejecutada", description=f"El usuario {member} fue silenciado por {duration_text}.\nMotivo: {reason}", color=discord.Color.green()))
+        asyncio.create_task(self.schedule_action_expiration(ctx.guild, member.id, "mute", duration_seconds))
 
     @commands.command(name="unmute")
     @commands.has_permissions(moderate_members=True)
     async def unmute_prefix(self, ctx, member: discord.Member, *, reason: str = "No especificada"):
         await member.timeout(None, reason=reason)
-        await self.send_log(ctx.guild, "Fin de Aislamiento (Unmute)", member, ctx.author, reason)
-        await ctx.send(f"Se ha revocado la restriccion de silencio aplicada al usuario {member}.")
+        self.deactivate_action(ctx.guild.id, member.id, "mute")
+        await self.send_log(ctx.guild, "Fin de aislamiento (unmute)", member, ctx.author, reason)
+        await ctx.send(embed=discord.Embed(title="✅ Acción ejecutada", description=f"Se ha revocado la restricción de silencio para {member}.\nMotivo: {reason}", color=discord.Color.green()))
+
+    @commands.command(name="warn")
+    @commands.has_permissions(moderate_members=True)
+    async def warn_prefix(self, ctx, user_input: str, warning_count: int, *, reason: str = "No especificada"):
+        member = self.get_member_from_input(ctx.guild, user_input)
+        if not isinstance(member, discord.Member):
+            await ctx.send(embed=discord.Embed(title="⚠️ Error", description="Debe mencionar a un miembro válido del servidor.", color=discord.Color.red()))
+            return
+        if warning_count <= 0:
+            await ctx.send(embed=discord.Embed(title="⚠️ Error", description="La cantidad debe ser mayor a cero.", color=discord.Color.red()))
+            return
+        self.warn_user(ctx.guild.id, member.id, ctx.author.id, reason, warning_count)
+        warnings = self.get_user_warnings(ctx.guild.id, member.id)
+        embed = discord.Embed(title="⚠️ Advertencia registrada", description=f"Se añadieron {warning_count} advertencia(s) a {member.mention}.\nMotivo: {reason}", color=discord.Color.orange())
+        embed.add_field(name="Total actual", value=str(len(warnings)), inline=False)
+        await ctx.send(embed=embed)
+
+    @commands.command(name="warns")
+    async def warns_prefix(self, ctx, user_input: str = None):
+        target = self.get_member_from_input(ctx.guild, user_input) if user_input else ctx.author
+        if not isinstance(target, discord.Member):
+            await ctx.send(embed=discord.Embed(title="⚠️ Error", description="Debe mencionar un miembro válido del servidor.", color=discord.Color.red()))
+            return
+        warnings = self.get_user_warnings(ctx.guild.id, target.id)
+        embed = discord.Embed(title=f"⚠️ Warns de {target.display_name}", color=discord.Color.orange())
+        embed.add_field(name="Total", value=str(len(warnings)), inline=False)
+        if warnings:
+            history = "\n".join(f"• {idx + 1}. {row[1]} (por {self.bot.get_user(row[0]) or row[0]} el {row[2]})" for idx, row in enumerate(warnings))
+            embed.add_field(name="Historial", value=history[:1024], inline=False)
+        else:
+            embed.add_field(name="Historial", value="Sin advertencias registradas.", inline=False)
+        await ctx.send(embed=embed)
 
     @commands.command(name="say")
     async def say_prefix(self, ctx, *, text_content: str):
         if not self.has_say_role(ctx.author):
-            await ctx.send("Error: No cuenta con los roles requeridos para utilizar este comando.")
+            await ctx.send(embed=discord.Embed(title="⚠️ Error", description="No cuenta con los roles requeridos para utilizar este comando.", color=discord.Color.red()))
             return
 
         embed_requested = text_content.lower().endswith(" embed_true")
@@ -322,12 +550,12 @@ class Moderation(commands.Cog):
             uptime_string = str(datetime.timedelta(seconds=uptime_seconds))
         else:
             uptime_string = "Desconocido"
-            
+
         current_process = psutil.Process(os.getpid())
         memory_usage_mb = current_process.memory_info().rss / 1024 / 1024
         api_latency_ms = round(self.bot.latency * 1000)
 
-        embed = discord.Embed(title="Diagnostico de Estado del Sistema", color=discord.Color.blue())
+        embed = discord.Embed(title="Diagnóstico de Estado del Sistema", color=discord.Color.blue())
         embed.add_field(name="Latencia de la API", value=f"{api_latency_ms} ms", inline=True)
         embed.add_field(name="Tiempo de actividad", value=uptime_string, inline=True)
         embed.add_field(name="Uso de memoria", value=f"{memory_usage_mb:.2f} MB", inline=True)
@@ -335,6 +563,28 @@ class Moderation(commands.Cog):
         embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
         await ctx.send(embed=embed)
 
-# --- REQUIRED SETUP FUNCTION ---
+    @commands.Cog.listener()
+    async def on_member_join(self, member):
+        channel = await self.get_log_channel(member.guild)
+        if not channel:
+            return
+        embed = discord.Embed(title="👋 Nuevo miembro", description=f"Bienvenido {member.mention} a {member.guild.name}", color=discord.Color.green())
+        embed.add_field(name="Usuario", value=str(member), inline=False)
+        embed.add_field(name="ID", value=str(member.id), inline=False)
+        embed.set_thumbnail(url=member.display_avatar.url)
+        await channel.send(embed=embed)
+
+    @commands.Cog.listener()
+    async def on_member_remove(self, member):
+        channel = await self.get_log_channel(member.guild)
+        if not channel:
+            return
+        embed = discord.Embed(title="👋 Salida de usuario", description=f"{member.mention} abandonó {member.guild.name}", color=discord.Color.red())
+        embed.add_field(name="Usuario", value=str(member), inline=False)
+        embed.add_field(name="ID", value=str(member.id), inline=False)
+        embed.set_thumbnail(url=member.display_avatar.url)
+        await channel.send(embed=embed)
+
+
 async def setup(bot):
     await bot.add_cog(Moderation(bot))
