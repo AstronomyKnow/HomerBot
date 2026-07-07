@@ -496,33 +496,6 @@ class Economy(commands.Cog):
         self.update_balances(target_user.id, wallet_change=-amount, bank_change=0)
         await ctx.send(f"✅ Se han retirado **${amount:,}** de la billetera de {target_user.mention}.")
 
-    @commands.hybrid_command(name="masspay", description="Entrega temporalmente $287,000 a todos los usuarios con saldo positivo en economía.")
-    async def masspay_slash(self, ctx: commands.Context):
-        if not self.is_staff(ctx.author):
-            await ctx.send("❌ No tienes permiso para usar este comando.", ephemeral=True)
-            return
-
-        amount = 287000
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT user_id FROM users WHERE (wallet + bank) >= 1")
-        rows = cursor.fetchall()
-
-        for (user_id,) in rows:
-            cursor.execute("UPDATE users SET wallet = wallet + ? WHERE user_id = ?", (amount, user_id))
-
-        conn.commit()
-        conn.close()
-
-        embed = discord.Embed(
-            title="💸 Pago masivo ejecutado",
-            description=f"Se entregaron **${amount:,}** a cada usuario con saldo positivo en economía.",
-            color=discord.Color.green()
-        )
-        embed.add_field(name="Usuarios afectados", value=str(len(rows)), inline=False)
-        embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
-        await ctx.send(embed=embed)
-
     @commands.hybrid_command(name="shop", description="Muestra el catálogo de la tienda de economía.")
     async def shop_prefix(self, ctx: commands.Context):
         embed = discord.Embed(title="🏪 Tienda del Servidor", description="Utiliza `&buy <item>` o `/buy` para adquirir mejoras financieras.", color=discord.Color.gold())
