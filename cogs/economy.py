@@ -599,31 +599,6 @@ class Economy(commands.Cog):
             color=discord.Color.teal()
         )
 
-    @commands.Cog.listener()
-    async def on_command_error(self, ctx, error):
-        if isinstance(error, commands.CommandOnCooldown):
-            embed = discord.Embed(
-                title="⏳ Cooldown activo",
-                description=self.format_cooldown_message(error.retry_after),
-                color=discord.Color.orange()
-            )
-            await ctx.send(embed=embed)
-            return
-
-    @commands.Cog.listener()
-    async def on_app_command_error(self, interaction, error):
-        if isinstance(error, discord.app_commands.CommandOnCooldown):
-            embed = discord.Embed(
-                title="⏳ Cooldown activo",
-                description=self.format_cooldown_message(error.retry_after),
-                color=discord.Color.orange()
-            )
-            if interaction.response.is_done():
-                await interaction.followup.send(embed=embed, ephemeral=True)
-            else:
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
     # --- HYBRID COMMANDS SYSTEM (PREFIX & SLASH) ---
 
     @commands.hybrid_command(name="ecohelp", description="Muestra la lista de comandos disponibles y cómo funcionan.")
