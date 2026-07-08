@@ -3,6 +3,8 @@ import datetime
 import os
 import sqlite3
 import time
+import shutil
+from pathlib import Path
 
 import discord
 import psutil
@@ -15,7 +17,7 @@ class Moderation(commands.Cog):
         self.bot = bot
         self.log_channel_id = 1393450057189167234
         self.allowed_say_roles = [1372448974211911770, 1359359923770757150, 1361138268829253875]
-        self.db_path = os.path.join(os.path.dirname(__file__), "..", "moderation.db")
+        self.db_path = str((Path(__file__).resolve().parents[1] / "moderation.db"))
         self.initialize_database()
         self.bot.loop.create_task(self.restore_sanctions())
 
@@ -24,7 +26,18 @@ class Moderation(commands.Cog):
         return any(role.id in self.allowed_say_roles for role in user.roles)
 
     def initialize_database(self):
-        conn = sqlite3.connect(self.db_path)
+        db_path = Path(self.db_path)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+
+        legacy_path = Path.cwd() / "moderation.db"
+        if not db_path.exists() and legacy_path.exists():
+            shutil.copy2(legacy_path, db_path)
+
+        backup_path = db_path.with_suffix(".db.backup")
+        if not db_path.exists() and backup_path.exists():
+            shutil.copy2(backup_path, db_path)
+
+        conn = sqlite3.connect(str(db_path))
         cursor = conn.cursor()
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS moderation_actions (

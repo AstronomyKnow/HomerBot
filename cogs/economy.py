@@ -6,6 +6,8 @@ import random
 import datetime
 import json
 import asyncio
+import shutil
+from pathlib import Path
 
 # --- CRYPTO MINIGAME UI INTERFACE ---
 class CryptoView(discord.ui.View):
@@ -65,7 +67,7 @@ class CryptoView(discord.ui.View):
 class Economy(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.db_path = "economy.db"
+        self.db_path = str((Path(__file__).resolve().parents[1] / "economy.db"))
         self.staff_roles = [1362456351263035553, 1361138268829253875, 1359359923770757150, 1372448974211911770]
         
         self.prices = {
@@ -83,6 +85,7 @@ class Economy(commands.Cog):
         self.passive_last_run = datetime.datetime.now(datetime.timezone.utc)
         self.topbar_channel_id = 1524131320962220084
         self.audit_channel_id = 1524421682377392338
+        self.allowed_channel_id = 1375975206719586485
         self.topbar_message_id = None
         self.initialize_database()
         self.passive_engine.start()
@@ -95,7 +98,18 @@ class Economy(commands.Cog):
     # --- DATABASE UTILITIES ---
     def initialize_database(self):
         try:
-            conn = sqlite3.connect(self.db_path)
+            db_path = Path(self.db_path)
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+
+            legacy_path = Path.cwd() / "economy.db"
+            if not db_path.exists() and legacy_path.exists():
+                shutil.copy2(legacy_path, db_path)
+
+            backup_path = db_path.with_suffix(".db.backup")
+            if not db_path.exists() and backup_path.exists():
+                shutil.copy2(backup_path, db_path)
+
+            conn = sqlite3.connect(str(db_path))
             cursor = conn.cursor()
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS users (
@@ -341,6 +355,24 @@ class Economy(commands.Cog):
 
     def format_cooldown_message(self, seconds: float) -> str:
         return f"💤 Tranquilo, vuelve a intentarlo en {self.format_duration(seconds)}."
+
+    def is_allowed_channel(self, ctx) -> bool:
+        return getattr(ctx.channel, "id", None) == self.allowed_channel_id
+
+    async def enforce_channel(self, ctx):
+        if self.is_allowed_channel(ctx):
+            return True
+        await ctx.send("🚫 Este sistema de economía solo está disponible en el canal designado. Ve a https://discord.com/channels/1359359447591419984/1375975206719586485", ephemeral=True)
+        return False
+
+    async def enforce_channel_interaction(self, interaction):
+        if interaction.channel_id == self.allowed_channel_id:
+            return True
+        if interaction.response.is_done():
+            await interaction.followup.send("🚫 Este sistema de economía solo está disponible en el canal designado. Ve a https://discord.com/channels/1359359447591419984/1375975206719586485", ephemeral=True)
+        else:
+            await interaction.response.send_message("🚫 Este sistema de economía solo está disponible en el canal designado. Ve a https://discord.com/channels/1359359447591419984/1375975206719586485", ephemeral=True)
+        return False
 
     def _user_label(self, user_id: int) -> str:
         user = self.bot.get_user(user_id)
@@ -594,6 +626,8 @@ class Economy(commands.Cog):
 
     @commands.hybrid_command(name="ecohelp", description="Muestra la lista de comandos disponibles y cómo funcionan.")
     async def ecohelp(self, ctx: commands.Context):
+        if not await self.enforce_channel(ctx):
+            return
         embed = discord.Embed(
             title="📖 Manual del Sistema de Economía", 
             description="Todos los comandos responden tanto a comandos de barra (`/`) como al prefijo (`&`).", 
@@ -643,6 +677,8 @@ class Economy(commands.Cog):
     @commands.hybrid_command(name="balance", aliases=["bal"], description="Muestra tu dinero actual en la billetera y el banco.")
     @app_commands.describe(target_user="El usuario del cual deseas revisar las finanzas.")
     async def balance_slash(self, ctx: commands.Context, target_user: discord.Member = None):
+        if not await self.enforce_channel(ctx):
+            return
         user = target_user or ctx.author
         if target_user and target_user != ctx.author:
             if not self.is_staff(ctx.author):
@@ -665,6 +701,8 @@ class Economy(commands.Cog):
     @commands.hybrid_command(name="addmoney", description="Añade dinero a la billetera, banco o ambos de un usuario específico.")
     @app_commands.describe(target_user="Usuario beneficiado", amount="Monto de dinero", scope_input="billetera, banco o ambos")
     async def add_money_slash(self, ctx: commands.Context, target_user: discord.Member, amount: int, scope_input: str = "billetera"):
+        if not await self.enforce_channel(ctx):
+            return
         if not self.is_staff(ctx.author):
             await ctx.send("❌ No tienes permiso para usar este comando.", ephemeral=True)
             return
@@ -685,6 +723,8 @@ class Economy(commands.Cog):
     @commands.hybrid_command(name="removemoney", description="Quita dinero de la billetera, banco o ambos de un usuario específico.")
     @app_commands.describe(target_user="Usuario afectado", amount="Monto de dinero", scope_input="billetera, banco o ambos")
     async def remove_money_slash(self, ctx: commands.Context, target_user: discord.Member, amount: int, scope_input: str = "billetera"):
+        if not await self.enforce_channel(ctx):
+            return
         if not self.is_staff(ctx.author):
             await ctx.send("❌ No tienes permiso para usar este comando.", ephemeral=True)
             return
@@ -704,6 +744,8 @@ class Economy(commands.Cog):
 
     @commands.hybrid_command(name="shop", description="Muestra el catálogo de la tienda de economía.")
     async def shop_prefix(self, ctx: commands.Context):
+        if not await self.enforce_channel(ctx):
+            return
         embed = discord.Embed(title="🏪 Tienda del Servidor", description="Utiliza `&buy <item>` o `/buy` para adquirir mejoras financieras.", color=discord.Color.gold())
         embed.add_field(name="🛡️ seguro - $15,000", value="Mitiga pérdidas de dinero si sufres un robo con éxito.", inline=False)
         embed.add_field(name="🏢 empresa - $75,000", value="Añade permanentemente un **75% más de ingresos** al usar `&work`.", inline=False)
@@ -716,6 +758,8 @@ class Economy(commands.Cog):
     @commands.hybrid_command(name="buy", description="Compra un artículo o inversión de la tienda.")
     @app_commands.describe(item_name="El nombre exacto del artículo que deseas comprar.")
     async def buy_prefix(self, ctx: commands.Context, item_name: str):
+        if not await self.enforce_channel(ctx):
+            return
         user_id = ctx.author.id
         data = self.get_user_data(user_id)
         item_key = item_name.lower()
@@ -784,6 +828,8 @@ class Economy(commands.Cog):
 
     @commands.hybrid_command(name="salarypay", description="Paga los salarios de tus empleados contratados.")
     async def salary_pay_prefix(self, ctx: commands.Context):
+        if not await self.enforce_channel(ctx):
+            return
         user_id = ctx.author.id
         data = self.get_user_data(user_id)
         
@@ -806,6 +852,8 @@ class Economy(commands.Cog):
     @commands.hybrid_command(name="work", description="Trabaja para conseguir dinero legal de forma activa.")
     @commands.cooldown(1, 30, commands.BucketType.user)
     async def work_prefix(self, ctx: commands.Context):
+        if not await self.enforce_channel(ctx):
+            return
         user_id = ctx.author.id
         data = self.get_user_data(user_id)
         base_earnings = random.randint(100, 300)
@@ -822,6 +870,8 @@ class Economy(commands.Cog):
     @commands.hybrid_command(name="crime", description="Comete un crimen ilegal para conseguir dinero rápido.")
     @commands.cooldown(1, 180, commands.BucketType.user)
     async def crime_prefix(self, ctx: commands.Context):
+        if not await self.enforce_channel(ctx):
+            return
         user_id = ctx.author.id
         data = self.get_user_data(user_id)
         
@@ -839,6 +889,8 @@ class Economy(commands.Cog):
     @commands.cooldown(1, 3600, commands.BucketType.user)
     @app_commands.describe(target_member="El usuario al que intentas robar.")
     async def steal_prefix(self, ctx: commands.Context, target_member: discord.Member):
+        if not await self.enforce_channel(ctx):
+            return
         if target_member == ctx.author:
             await ctx.send("❌ No puedes robarte a ti mismo.")
             return
@@ -890,6 +942,8 @@ class Economy(commands.Cog):
     @commands.hybrid_command(name="sue", description="Demanda legalmente a un usuario que te robó dinero hace poco.")
     @app_commands.describe(target_thief="El presunto ladrón al que vas a demandar.")
     async def sue_prefix(self, ctx: commands.Context, target_thief: discord.Member):
+        if not await self.enforce_channel(ctx):
+            return
         victim_id = ctx.author.id
         thief_id = target_thief.id
         
@@ -919,6 +973,8 @@ class Economy(commands.Cog):
     @commands.hybrid_command(name="give", description="Transfiere una cantidad de efectivo a otro miembro.")
     @app_commands.describe(target_member="Usuario que recibe el dinero", amount="Monto a dar")
     async def give_prefix(self, ctx: commands.Context, target_member: discord.Member, amount: int):
+        if not await self.enforce_channel(ctx):
+            return
         if target_member == ctx.author:
             await ctx.send("❌ No puedes transferir fondos a ti mismo.")
             return
@@ -938,6 +994,8 @@ class Economy(commands.Cog):
     @commands.hybrid_command(name="crypto", description="Invierte en un broker simulado de criptomonedas.")
     @app_commands.describe(investment="Cantidad de efectivo que quieres arriesgar.")
     async def crypto_prefix(self, ctx: commands.Context, investment: int = 500):
+        if not await self.enforce_channel(ctx):
+            return
         user_id = ctx.author.id
         user_data = self.get_user_data(user_id)
         
@@ -958,6 +1016,8 @@ class Economy(commands.Cog):
 
     @commands.hybrid_command(name="collect", description="Cobra el dinero pasivo acumulado por tus negocios e inversiones.")
     async def collect_prefix(self, ctx: commands.Context):
+        if not await self.enforce_channel(ctx):
+            return
         user_id = ctx.author.id
         wallet_collected, bank_collected = self.collect_pending_income(user_id)
 
@@ -982,6 +1042,8 @@ class Economy(commands.Cog):
 
     @commands.hybrid_command(name="collectiontime", description="Muestra cuándo y cuánto generarán tus activos AFK.")
     async def collection_time_prefix(self, ctx: commands.Context):
+        if not await self.enforce_channel(ctx):
+            return
         user_id = ctx.author.id
         data = self.get_user_data(user_id)
 
@@ -1033,6 +1095,8 @@ class Economy(commands.Cog):
     @commands.hybrid_command(name="pay", description="Paga parte o la totalidad de tu multa pendiente.")
     @app_commands.describe(amount_input="Cantidad a pagar o escribe 'all'.")
     async def pay_prefix(self, ctx: commands.Context, amount_input: str = "all"):
+        if not await self.enforce_channel(ctx):
+            return
         user_id = ctx.author.id
         data = self.get_user_data(user_id)
         if data["fine"] <= 0:
@@ -1064,6 +1128,8 @@ class Economy(commands.Cog):
 
     @commands.hybrid_command(name="daily", description="Reclama tu recompensa financiera diaria.")
     async def daily_prefix(self, ctx: commands.Context):
+        if not await self.enforce_channel(ctx):
+            return
         user_id = ctx.author.id
         user_data = self.get_user_data(user_id)
         current_date_str = datetime.date.today().isoformat()
@@ -1080,6 +1146,8 @@ class Economy(commands.Cog):
     @commands.hybrid_command(name="deposit", aliases=["dep"], description="Deposita dinero de tu billetera al banco.")
     @app_commands.describe(amount_input="Cantidad de dinero numérico o escribe 'all'.")
     async def deposit_prefix(self, ctx: commands.Context, amount_input: str):
+        if not await self.enforce_channel(ctx):
+            return
         user_id = ctx.author.id
         user_data = self.get_user_data(user_id)
         wallet_balance = user_data["wallet"]
@@ -1103,6 +1171,8 @@ class Economy(commands.Cog):
     @commands.hybrid_command(name="withdraw", aliases=["with"], description="Retira dinero de tu cuenta bancaria a tu billetera.")
     @app_commands.describe(amount_input="Cantidad de dinero numérico o escribe 'all'.")
     async def withdraw_prefix(self, ctx: commands.Context, amount_input: str):
+        if not await self.enforce_channel(ctx):
+            return
         user_id = ctx.author.id
         user_data = self.get_user_data(user_id)
         bank_balance = user_data["bank"]
@@ -1126,6 +1196,8 @@ class Economy(commands.Cog):
     # --- TOP COMMAND (LIMIT 100) ---
     @commands.hybrid_command(name="top", aliases=["leaderboard", "ricos"], description="Muestra la lista de los usuarios con más dinero.")
     async def top_rich(self, ctx: commands.Context):
+        if not await self.enforce_channel(ctx):
+            return
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("""
