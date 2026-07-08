@@ -3,6 +3,7 @@ from discord.ext import commands
 from discord.abc import Messageable
 import os
 import time
+from backup_economy import backup_if_needed
 
 class MyBot(commands.Bot):
     def __init__(self):
@@ -15,6 +16,7 @@ class MyBot(commands.Bot):
         self.start_time = time.time()
 
     async def setup_hook(self):
+        backup_if_needed()
         # Load all modules inside the cogs directory
         for filename in os.listdir('./cogs'):
             if filename.endswith('.py'):
