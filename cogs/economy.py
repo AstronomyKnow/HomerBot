@@ -82,6 +82,7 @@ class Economy(commands.Cog):
         self.passive_interval_seconds = 30 * 60
         self.passive_last_run = datetime.datetime.now(datetime.timezone.utc)
         self.topbar_channel_id = 1524131320962220084
+        self.audit_channel_id = 1524421682377392338
         self.topbar_message_id = None
         self.initialize_database()
         self.passive_engine.start()
@@ -190,16 +191,34 @@ class Economy(commands.Cog):
             "pending_wallet": row[10], "pending_bank": row[11], "fine": row[12]
         }
 
-    def update_balances(self, user_id: int, wallet_change: int, bank_change: int):
+    def update_balances(self, user_id: int, wallet_change: int, bank_change: int, reason: str = "Ajuste de saldo",
+                        details: str = None, actor_id: int = None, target_user_id: int = None):
         data = self.get_user_data(user_id)
-        new_wallet = max(0, data["wallet"] + wallet_change)
-        new_bank = max(0, data["bank"] + bank_change)
+        before_wallet = data["wallet"]
+        before_bank = data["bank"]
+        new_wallet = max(0, before_wallet + wallet_change)
+        new_bank = max(0, before_bank + bank_change)
         
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("UPDATE users SET wallet = ?, bank = ? WHERE user_id = ?", (new_wallet, new_bank, user_id))
         conn.commit()
         conn.close()
+
+        if wallet_change != 0 or bank_change != 0:
+            asyncio.create_task(self.log_balance_change(
+                user_id,
+                wallet_change,
+                bank_change,
+                before_wallet,
+                before_bank,
+                new_wallet,
+                new_bank,
+                reason=reason,
+                details=details,
+                actor_id=actor_id,
+                target_user_id=target_user_id
+            ))
 
     def update_asset(self, user_id: int, column_name: str, value):
         conn = sqlite3.connect(self.db_path)
@@ -213,6 +232,13 @@ class Economy(commands.Cog):
             return 0
         data = self.get_user_data(user_id)
         self.update_asset(user_id, "fine", data["fine"] + amount)
+        asyncio.create_task(self.log_economy_event(
+            "⚖️ Multa impuesta",
+            "Se aplicó una multa a un usuario de economía.",
+            user_id=user_id,
+            fields=[("💸 Monto", f"${amount:,}"), ("🧾 Multa nueva", f"${data['fine'] + amount:,}")],
+            color=discord.Color.red()
+        ))
         return amount
 
     def pay_fine(self, user_id: int, amount: int):
@@ -234,7 +260,7 @@ class Economy(commands.Cog):
         wallet_to_pay = min(wallet_available, payable)
         bank_to_pay = payable - wallet_to_pay
 
-        self.update_balances(user_id, wallet_change=-wallet_to_pay, bank_change=-bank_to_pay)
+        self.update_balances(user_id, wallet_change=-wallet_to_pay, bank_change=-bank_to_pay, reason="Pago de multa", details=f"Pagó ${payable:,} de una multa pendiente.")
         self.update_asset(user_id, "fine", data["fine"] - payable)
         return payable
 
@@ -264,6 +290,14 @@ class Economy(commands.Cog):
         )
         conn.commit()
         conn.close()
+        if wallet_pending != 0 or bank_pending != 0:
+            asyncio.create_task(self.log_economy_event(
+                "💸 Ingreso pasivo cobrado",
+                "Se cobraron fondos pendientes de ingresos AFK o pasivos.",
+                user_id=user_id,
+                fields=[("💵 Billetera cobrada", f"${wallet_pending:,}"), ("🏦 Banco cobrado", f"${bank_pending:,}")],
+                color=discord.Color.green()
+            ))
         return wallet_pending, bank_pending
 
     def parse_balance_scope(self, value):
@@ -307,6 +341,84 @@ class Economy(commands.Cog):
 
     def format_cooldown_message(self, seconds: float) -> str:
         return f"💤 Tranquilo, vuelve a intentarlo en {self.format_duration(seconds)}."
+
+    def _user_label(self, user_id: int) -> str:
+        user = self.bot.get_user(user_id)
+        if user:
+            return f"{user.name}#{user.discriminator} ({user.id})"
+        return f"Usuario {user_id}"
+
+    async def get_audit_channel(self):
+        channel = self.bot.get_channel(self.audit_channel_id)
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(self.audit_channel_id)
+            except Exception:
+                return None
+        return channel
+
+    async def log_economy_event(self, title: str, description: str, *, user_id: int = None, target_user_id: int = None,
+                                fields=None, ctx=None, color=None):
+        channel = await self.get_audit_channel()
+        if channel is None:
+            return
+
+        embed = discord.Embed(
+            title=title,
+            description=description,
+            color=color or discord.Color.blurple(),
+            timestamp=datetime.datetime.now(datetime.timezone.utc)
+        )
+
+        if user_id is not None:
+            embed.add_field(name="👤 Usuario afectado", value=self._user_label(user_id), inline=True)
+        if target_user_id is not None:
+            embed.add_field(name="🎯 Usuario secundario", value=self._user_label(target_user_id), inline=True)
+        if ctx is not None:
+            server_name = ctx.guild.name if ctx.guild else "DM"
+            channel_name = getattr(ctx.channel, "mention", str(ctx.channel))
+            command_name = f"{ctx.prefix}{ctx.command.name}" if ctx.prefix and getattr(ctx, "command", None) else f"/{getattr(ctx.command, 'name', 'desconocido')}"
+            embed.add_field(name="🗂️ Servidor", value=server_name, inline=True)
+            embed.add_field(name="📍 Canal", value=channel_name, inline=True)
+            embed.add_field(name="🧾 Comando", value=command_name, inline=True)
+
+        if fields:
+            for field_name, field_value in fields:
+                embed.add_field(name=field_name, value=field_value, inline=False)
+
+        try:
+            await channel.send(embed=embed)
+        except Exception as e:
+            print(f"No se pudo enviar el log de economía: {e}")
+
+    async def log_balance_change(self, user_id: int, wallet_change: int, bank_change: int, before_wallet: int, before_bank: int,
+                                 new_wallet: int, new_bank: int, reason: str = "Ajuste de saldo", details: str = None,
+                                 actor_id: int = None, target_user_id: int = None):
+        if wallet_change == 0 and bank_change == 0:
+            return
+
+        fields = [
+            ("🔄 Motivo", reason),
+            ("💵 Cambio billetera", f"{wallet_change:+,}"),
+            ("🏦 Cambio banco", f"{bank_change:+,}"),
+            ("📊 Balance anterior", f"💵 ${before_wallet:,} | 🏦 ${before_bank:,}"),
+            ("📈 Nuevo balance", f"💵 ${new_wallet:,} | 🏦 ${new_bank:,}")
+        ]
+        if details:
+            fields.append(("📝 Detalle", details))
+        if actor_id is not None:
+            fields.append(("⚙️ Actor", self._user_label(actor_id)))
+        if target_user_id is not None:
+            fields.append(("🎯 Objetivo", self._user_label(target_user_id)))
+
+        await self.log_economy_event(
+            "💰 Cambio de saldo económico",
+            "Se registró un movimiento financiero en la economía del servidor.",
+            user_id=user_id,
+            target_user_id=target_user_id,
+            fields=fields,
+            color=discord.Color.orange()
+        )
 
     async def update_topbar_message(self):
         try:
@@ -427,6 +539,31 @@ class Economy(commands.Cog):
     @topbar_engine.before_loop
     async def before_topbar_engine(self):
         await self.bot.wait_until_ready()
+
+    @commands.Cog.listener()
+    async def on_command(self, ctx):
+        if not ctx.command or ctx.command.cog is not self:
+            return
+        await self.log_economy_event(
+            "🧾 Comando de economía ejecutado",
+            "Se registró la ejecución de un comando del sistema de economía.",
+            user_id=ctx.author.id,
+            fields=[("🧪 Comando", ctx.command.name), ("📝 Mensaje", ctx.message.content)],
+            ctx=ctx,
+            color=discord.Color.teal()
+        )
+
+    @commands.Cog.listener()
+    async def on_app_command_completion(self, interaction, command):
+        if getattr(command, "cog", None) is not self:
+            return
+        await self.log_economy_event(
+            "🧾 Comando de economía ejecutado",
+            "Se registró la ejecución de un comando de economía vía interacción.",
+            user_id=interaction.user.id,
+            fields=[("🧪 Comando", f"/{command.name}")],
+            color=discord.Color.teal()
+        )
 
     @commands.Cog.listener()
     async def on_command_error(self, ctx, error):
@@ -662,7 +799,7 @@ class Economy(commands.Cog):
             await ctx.send(f"❌ Dinero insuficiente en tu billetera. Necesitas **${total_salary_cost:,}**.")
             return
             
-        self.update_balances(user_id, wallet_change=-total_salary_cost, bank_change=0)
+        self.update_balances(user_id, wallet_change=-total_salary_cost, bank_change=0, reason="Nómina", details=f"Pagaste ${total_salary_cost:,} de salarios a tus empleados.")
         self.update_asset(user_id, "last_salary_pay", datetime.datetime.now().isoformat())
         await ctx.send(f"💼 Nómina pagada por **${total_salary_cost:,}**. Contrato renovado por 24 horas.")
 
@@ -679,7 +816,7 @@ class Economy(commands.Cog):
         if data["fine"] > 0:
             base_earnings = int(base_earnings * 0.25)
             
-        self.update_balances(user_id, wallet_change=base_earnings, bank_change=0)
+        self.update_balances(user_id, wallet_change=base_earnings, bank_change=0, reason="Trabajo", details=f"Ganaste ${base_earnings:,} trabajando.")
         await ctx.send(f"💰 ¡Trabajaste duro y ganaste **${base_earnings}**!")
 
     @commands.hybrid_command(name="crime", description="Comete un crimen ilegal para conseguir dinero rápido.")
@@ -692,12 +829,14 @@ class Economy(commands.Cog):
             payout = random.randint(800, 1500)
             if data["fine"] > 0:
                 payout = int(payout * 0.25)
-            self.update_balances(user_id, wallet_change=payout, bank_change=0)
+            self.update_balances(user_id, wallet_change=payout, bank_change=0, reason="Crimen", details=f"Tu crimen salió bien y ganaste ${payout:,}.")
             await ctx.send(f"🥷 ¡El atraco fue un éxito! Obtuviste **${payout:,}**.")
         else:
             penalty = random.randint(400, 900)
             self.apply_fine(user_id, penalty)
             await ctx.send(f"🚨 ¡Te atraparon cometiendo el crimen! Te impusieron una multa de **${penalty:,}**. Usa `&pay` para pagarla.")
+    @commands.hybrid_command(name="steal", description="Intenta desvalijar la cartera de alguien.")
+    @app_commands.describe(target_member="El usuario al que intentas robar.")
     async def steal_prefix(self, ctx: commands.Context, target_member: discord.Member):
         if target_member == ctx.author:
             await ctx.send("❌ No puedes robarte a ti mismo.")
@@ -735,8 +874,8 @@ class Economy(commands.Cog):
                 bank_stolen = int(bank_stolen * 0.5)
                 await ctx.send(f"🛡️ El **Seguro de Banco** de {target_member.name} mitigó parcialmente el impacto.")
 
-        self.update_balances(victim_id, wallet_change=-wallet_stolen, bank_change=-bank_stolen)
-        self.update_balances(thief_id, wallet_change=final_stolen_amount, bank_change=0)
+        self.update_balances(victim_id, wallet_change=-wallet_stolen, bank_change=-bank_stolen, reason="Robo", details=f"Se le retiraron fondos tras un intento de robo.", target_user_id=thief_id)
+        self.update_balances(thief_id, wallet_change=final_stolen_amount, bank_change=0, reason="Robo", details=f"Robaste ${final_stolen_amount:,} a {target_member.name}.", actor_id=thief_id, target_user_id=victim_id)
         
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
@@ -770,8 +909,8 @@ class Economy(commands.Cog):
         
         if random.random() < 0.50:
             compensation = int(stolen_amount * 1.10)
-            self.update_balances(thief_id, wallet_change=-compensation, bank_change=0)
-            self.update_balances(victim_id, wallet_change=compensation, bank_change=0)
+            self.update_balances(thief_id, wallet_change=-compensation, bank_change=0, reason="Demanda", details=f"Pagaste ${compensation:,} por una demanda judicial.")
+            self.update_balances(victim_id, wallet_change=compensation, bank_change=0, reason="Demanda", details=f"Recibiste ${compensation:,} por una demanda judicial.")
             await ctx.send(f"⚖️ ¡Anulaste las defensas de {target_thief.mention} en la corte! Recibiste **${compensation:,}** por el robo y daños.")
         else:
             await ctx.send(f"⚖️ Perdiste el juicio contra {target_thief.name} por falta de pruebas.")
@@ -791,8 +930,8 @@ class Economy(commands.Cog):
             await ctx.send("❌ No cuentas con suficiente efectivo disponible en tu billetera.")
             return
             
-        self.update_balances(ctx.author.id, wallet_change=-amount, bank_change=0)
-        self.update_balances(target_member.id, wallet_change=amount, bank_change=0)
+        self.update_balances(ctx.author.id, wallet_change=-amount, bank_change=0, reason="Transferencia", details=f"Transferiste ${amount:,} a {target_member.name}.", actor_id=ctx.author.id, target_user_id=target_member.id)
+        self.update_balances(target_member.id, wallet_change=amount, bank_change=0, reason="Transferencia", details=f"Recibiste ${amount:,} de {ctx.author.name}.", actor_id=ctx.author.id, target_user_id=target_member.id)
         await ctx.send(f"🤝 Has transferido **${amount:,}** a la billetera de {target_member.mention}.")
 
     @commands.hybrid_command(name="crypto", description="Invierte en un broker simulado de criptomonedas.")
@@ -933,7 +1072,7 @@ class Economy(commands.Cog):
             return
             
         daily_reward = 500
-        self.update_balances(user_id, wallet_change=daily_reward, bank_change=0)
+        self.update_balances(user_id, wallet_change=daily_reward, bank_change=0, reason="Daily", details=f"Reclamaste el bono diario de ${daily_reward:,}.")
         self.update_asset(user_id, "last_daily", current_date_str)
         await ctx.send(f"🎁 ¡Has reclamado tus **${daily_reward}** del bono diario!")
 
@@ -957,7 +1096,7 @@ class Economy(commands.Cog):
             await ctx.send("❌ Cantidad inválida o fondos insuficientes.")
             return
             
-        self.update_balances(user_id, wallet_change=-amount, bank_change=amount)
+        self.update_balances(user_id, wallet_change=-amount, bank_change=amount, reason="Depósito", details=f"Depositaste ${amount:,} en el banco.")
         await ctx.send(f"🏦 Depositados **${amount:,}** en el banco.")
 
     @commands.hybrid_command(name="withdraw", aliases=["with"], description="Retira dinero de tu cuenta bancaria a tu billetera.")
@@ -980,7 +1119,7 @@ class Economy(commands.Cog):
             await ctx.send("❌ Cantidad inválida o fondos insuficientes.")
             return
             
-        self.update_balances(user_id, wallet_change=amount, bank_change=-amount)
+        self.update_balances(user_id, wallet_change=amount, bank_change=-amount, reason="Retiro", details=f"Retiraste ${amount:,} del banco.")
         await ctx.send(f"💵 Retirados **${amount:,}** de tu cuenta bancaria.")
 
     # --- TOP COMMAND (LIMIT 100) ---
