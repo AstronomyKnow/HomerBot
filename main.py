@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 from discord.abc import Messageable
 import os
+import sys
 import time
 from backup_economy import backup_if_needed
 
@@ -104,4 +105,9 @@ async def on_app_command_error(interaction: discord.Interaction, error):
             await interaction.response.send_message(f"Ocurrio un error imprevisto: {error}", ephemeral=True)
 
 # Run the bot with your token from the environment
-bot.run(os.environ.get("DISCORD_TOKEN"))
+TOKEN = os.environ.get("DISCORD_TOKEN")
+if not TOKEN:
+    print("ERROR: DISCORD_TOKEN no está configurado. Define la variable de entorno antes de arrancar el bot.")
+    sys.exit(1)
+
+bot.run(TOKEN)
