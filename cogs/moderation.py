@@ -11,13 +11,15 @@ import psutil
 from discord import app_commands
 from discord.ext import commands
 
+from backup_economy import resolve_database_paths
+
 
 class Moderation(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.log_channel_id = 1393450057189167234
         self.allowed_say_roles = [1372448974211911770, 1359359923770757150, 1361138268829253875]
-        self.db_path = str((Path(__file__).resolve().parents[1] / "moderation.db"))
+        self.db_path = str(resolve_database_paths("moderation.db")[0])
         self.initialize_database()
         self.bot.loop.create_task(self.restore_sanctions())
 

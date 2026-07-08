@@ -9,6 +9,8 @@ import asyncio
 import shutil
 from pathlib import Path
 
+from backup_economy import resolve_database_paths
+
 # --- CRYPTO MINIGAME UI INTERFACE ---
 class CryptoView(discord.ui.View):
     def __init__(self, economy_cog, user_id: int, investment: int, trend: bool):
@@ -67,7 +69,7 @@ class CryptoView(discord.ui.View):
 class Economy(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.db_path = str((Path(__file__).resolve().parents[1] / "economy.db"))
+        self.db_path = str(resolve_database_paths("economy.db")[0])
         self.staff_roles = [1362456351263035553, 1361138268829253875, 1359359923770757150, 1372448974211911770]
         
         self.prices = {
