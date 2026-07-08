@@ -836,6 +836,7 @@ class Economy(commands.Cog):
             self.apply_fine(user_id, penalty)
             await ctx.send(f"🚨 ¡Te atraparon cometiendo el crimen! Te impusieron una multa de **${penalty:,}**. Usa `&pay` para pagarla.")
     @commands.hybrid_command(name="steal", description="Intenta desvalijar la cartera de alguien.")
+    @commands.cooldown(1, 3600, commands.BucketType.user)
     @app_commands.describe(target_member="El usuario al que intentas robar.")
     async def steal_prefix(self, ctx: commands.Context, target_member: discord.Member):
         if target_member == ctx.author:
