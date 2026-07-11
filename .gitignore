@@ -5,3 +5,15 @@ __pycache__/
 .env
 !economy.db
 !economy.db.backup
+
+# Entornos virtuales (nunca se suben al repo)
+.venv/
+.venv-1/
+venv/
+env/
+
+# Caches de herramientas
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
