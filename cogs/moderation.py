@@ -425,10 +425,10 @@ class Moderation(commands.Cog):
             await interaction.response.send_message(embed=discord.Embed(title="⚠️ Error", description="Debe mencionar a un miembro válido del servidor.", color=discord.Color.red()))
             return
 
+        await self.notify_sanction(member, "Expulsión", interaction.user, reason, "No aplica")
         await member.kick(reason=reason)
         self.store_action(interaction.guild.id, member.id, "kick", interaction.user.id, reason)
         await self.send_log(interaction.guild, "Expulsión", member, interaction.user, reason)
-        await self.notify_sanction(member, "Expulsión", interaction.user, reason, "No aplica")
         await interaction.response.send_message(embed=discord.Embed(title="✅ Acción ejecutada", description=f"El usuario {member} fue expulsado.\nMotivo: {reason}", color=discord.Color.green()))
 
     @app_commands.command(name="ban", description="Banea a un miembro del servidor. Usa 'p' en tiempo para un baneo permanente.")
@@ -446,6 +446,7 @@ class Moderation(commands.Cog):
             await interaction.response.send_message(embed=discord.Embed(title="⚠️ Error", description=str(error), color=discord.Color.red()))
             return
 
+        await self.notify_sanction(member, "Baneo", interaction.user, reason, duration_text)
         await interaction.guild.ban(member, reason=reason)
         expires_at = None
         if duration_seconds is not None:
@@ -453,7 +454,6 @@ class Moderation(commands.Cog):
         self.store_action(interaction.guild.id, member.id, "ban", interaction.user.id, reason, duration_seconds, expires_at)
         action_label = "Baneo permanente" if duration_seconds is None else "Baneo temporal"
         await self.send_log(interaction.guild, action_label, member, interaction.user, reason, duration_text)
-        await self.notify_sanction(member, "Baneo", interaction.user, reason, duration_text)
         description = (
             f"El usuario {member} fue baneado permanentemente.\nMotivo: {reason}"
             if duration_seconds is None
@@ -586,10 +586,10 @@ class Moderation(commands.Cog):
         if not isinstance(member, discord.Member):
             await ctx.send(embed=discord.Embed(title="⚠️ Error", description="Debe mencionar a un miembro válido del servidor.", color=discord.Color.red()))
             return
+        await self.notify_sanction(member, "Expulsión", ctx.author, reason, "No aplica")
         await member.kick(reason=reason)
         self.store_action(ctx.guild.id, member.id, "kick", ctx.author.id, reason)
         await self.send_log(ctx.guild, "Expulsión", member, ctx.author, reason)
-        await self.notify_sanction(member, "Expulsión", ctx.author, reason, "No aplica")
         await ctx.send(embed=discord.Embed(title="✅ Acción ejecutada", description=f"El usuario {member} fue expulsado.\nMotivo: {reason}", color=discord.Color.green()))
 
     @commands.command(name="ban")
@@ -606,6 +606,7 @@ class Moderation(commands.Cog):
             await ctx.send(embed=discord.Embed(title="⚠️ Error", description=str(error), color=discord.Color.red()))
             return
 
+        await self.notify_sanction(member, "Baneo", ctx.author, reason, duration_text)
         await ctx.guild.ban(member, reason=reason)
         expires_at = None
         if duration_seconds is not None:
@@ -613,7 +614,6 @@ class Moderation(commands.Cog):
         self.store_action(ctx.guild.id, member.id, "ban", ctx.author.id, reason, duration_seconds, expires_at)
         action_label = "Baneo permanente" if duration_seconds is None else "Baneo temporal"
         await self.send_log(ctx.guild, action_label, member, ctx.author, reason, duration_text)
-        await self.notify_sanction(member, "Baneo", ctx.author, reason, duration_text)
         description = (
             f"El usuario {member} fue baneado permanentemente.\nMotivo: {reason}"
             if duration_seconds is None
