@@ -8,6 +8,7 @@ import discord
 from discord.ext import commands
 
 from backup_economy import resolve_database_paths
+from emojis import error_emoji, success_emoji
 
 
 TICKETS_CHANNEL_ID = 1382823475437240482
@@ -321,7 +322,7 @@ class Tickets(commands.Cog):
             if existing_channel:
                 await interaction.response.send_message(
                     embed=discord.Embed(
-                        title="⚠️ Ya tienes un ticket abierto",
+                        title=f"{error_emoji(self.bot)} Ya tienes un ticket abierto",
                         description=f"Ya tienes un ticket en curso: {existing_channel.mention}",
                         color=discord.Color.red(),
                     ),
@@ -364,7 +365,7 @@ class Tickets(commands.Cog):
 
         await interaction.followup.send(
             embed=discord.Embed(
-                title="✅ Ticket creado",
+                title=f"{success_emoji(self.bot)} Ticket creado",
                 description=f"Tu ticket fue creado con éxito: {channel.mention}",
                 color=discord.Color.green(),
             ),
@@ -384,7 +385,7 @@ class Tickets(commands.Cog):
                 pass
             warning = await channel.send(
                 embed=discord.Embed(
-                    title="❌ Mensaje inválido",
+                    title=f"{error_emoji(self.bot)} Mensaje inválido",
                     description="Tu mensaje debe ser **solo texto** (sin imágenes, archivos ni stickers). Por favor, inténtalo de nuevo.",
                     color=discord.Color.red(),
                 )
@@ -413,7 +414,7 @@ class Tickets(commands.Cog):
                 pass
 
         embed = discord.Embed(
-            title="✅ Ticket creado completamente",
+            title=f"{success_emoji(self.bot)} Ticket creado completamente",
             description=(
                 f"**Ticket:** {description}\n\n"
                 "⚠️ Por favor, no menciones a ningún miembro del personal hasta que un moderador reclame este ticket."
@@ -428,7 +429,7 @@ class Tickets(commands.Cog):
     async def handle_claim(self, interaction: discord.Interaction, ticket_id: int):
         ticket_row = self.get_ticket(ticket_id)
         if not ticket_row:
-            await interaction.response.send_message("⚠️ Este ticket ya no existe.", ephemeral=True)
+            await interaction.response.send_message(embed=discord.Embed(title=f"{error_emoji(self.bot)} Ticket no encontrado", description="Este ticket ya no existe.", color=discord.Color.red()), ephemeral=True)
             return
         (_, guild_id, channel_id, creator_id, status, description, claimed_by,
          closing_user_id, close_reason, created_at, claimed_at, closed_at) = ticket_row
@@ -436,7 +437,7 @@ class Tickets(commands.Cog):
         member = interaction.user
         if member.id == creator_id or not self.has_staff_role(member):
             await interaction.response.send_message(
-                embed=discord.Embed(title="❌ No eres un moderador.", color=discord.Color.red()),
+                embed=discord.Embed(title=f"{error_emoji(self.bot)} No eres un moderador.", color=discord.Color.red()),
                 ephemeral=True,
             )
             return
@@ -445,7 +446,7 @@ class Tickets(commands.Cog):
             claimer = interaction.guild.get_member(claimed_by)
             await interaction.response.send_message(
                 embed=discord.Embed(
-                    title="⚠️ Ticket ya reclamado",
+                    title=f"{error_emoji(self.bot)} Ticket ya reclamado",
                     description=f"Este ticket ya fue reclamado por {claimer.mention if claimer else claimed_by}.",
                     color=discord.Color.red(),
                 ),
@@ -467,7 +468,7 @@ class Tickets(commands.Cog):
 
         await interaction.channel.send(
             embed=discord.Embed(
-                title="🙋 Ticket reclamado",
+                title=f"{success_emoji(self.bot)} Ticket reclamado",
                 description=f"{member.mention} se hará cargo de este ticket a partir de ahora.",
                 color=discord.Color.gold(),
             )
@@ -478,7 +479,7 @@ class Tickets(commands.Cog):
     async def handle_close_request(self, interaction: discord.Interaction, ticket_id: int):
         ticket_row = self.get_ticket(ticket_id)
         if not ticket_row:
-            await interaction.response.send_message("⚠️ Este ticket ya no existe.", ephemeral=True)
+            await interaction.response.send_message(embed=discord.Embed(title=f"{error_emoji(self.bot)} Ticket no encontrado", description="Este ticket ya no existe.", color=discord.Color.red()), ephemeral=True)
             return
         (_, guild_id, channel_id, creator_id, status, description, claimed_by,
          closing_user_id, close_reason, created_at, claimed_at, closed_at) = ticket_row
@@ -486,7 +487,7 @@ class Tickets(commands.Cog):
         member = interaction.user
         if member.id != creator_id and not self.has_staff_role(member):
             await interaction.response.send_message(
-                embed=discord.Embed(title="❌ No tienes permiso para cerrar este ticket.", color=discord.Color.red()),
+                embed=discord.Embed(title=f"{error_emoji(self.bot)} No tienes permiso para cerrar este ticket.", color=discord.Color.red()),
                 ephemeral=True,
             )
             return
@@ -534,7 +535,7 @@ class Tickets(commands.Cog):
         creator = guild.get_member(creator_id)
         claimer = guild.get_member(claimed_by) if claimed_by else None
 
-        log_embed = discord.Embed(title=f"🔒 Ticket #{ticket_id} cerrado", color=discord.Color.gold())
+        log_embed = discord.Embed(title=f"{success_emoji(self.bot)} Ticket #{ticket_id} cerrado", color=discord.Color.gold())
         log_embed.add_field(name="Creado por", value=f"{creator.mention if creator else creator_id} ({creator_id})", inline=False)
         log_embed.add_field(name="Reclamado por", value=(claimer.mention if claimer else "Nadie reclamó este ticket"), inline=False)
         log_embed.add_field(name="Cerrado por", value=f"{closer.mention} ({closer.id})", inline=False)

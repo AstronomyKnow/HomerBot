@@ -10,6 +10,7 @@ import shutil
 from pathlib import Path
 
 from backup_economy import resolve_database_paths
+from emojis import format_money, error_emoji, success_emoji
 
 # --- CRYPTO MINIGAME UI INTERFACE ---
 class CryptoView(discord.ui.View):
@@ -24,7 +25,7 @@ class CryptoView(discord.ui.View):
     @discord.ui.button(label="Comprar (Long)", style=discord.ButtonStyle.green)
     async def buy_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id: 
-            await interaction.response.send_message("❌ Esta no es tu sesión de inversión.", ephemeral=True)
+            await interaction.response.send_message(embed=self.economy.error_embed("Esta no es tu sesión de inversión."), ephemeral=True)
             return
         self.action = "buy"
         await self.process_result(interaction)
@@ -32,7 +33,7 @@ class CryptoView(discord.ui.View):
     @discord.ui.button(label="Vender (Short)", style=discord.ButtonStyle.red)
     async def sell_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id: 
-            await interaction.response.send_message("❌ Esta no es tu sesión de inversión.", ephemeral=True)
+            await interaction.response.send_message(embed=self.economy.error_embed("Esta no es tu sesión de inversión."), ephemeral=True)
             return
         self.action = "sell"
         await self.process_result(interaction)
@@ -42,12 +43,16 @@ class CryptoView(discord.ui.View):
             child.disabled = True
         await interaction.message.edit(view=self)
         
-        await interaction.response.send_message("⏳ Procesando transacción criptográfica en la blockchain (5 segundos)...")
+        await interaction.response.send_message(embed=discord.Embed(
+            title="⏳ Procesando transacción",
+            description="Procesando tu operación en la blockchain (5 segundos)...",
+            color=discord.Color.gold(),
+        ))
         await asyncio.sleep(5)
         
         user_data = self.economy.get_user_data(self.user_id)
         if user_data["wallet"] < self.investment:
-            await interaction.followup.send("❌ Ya no dispones de los fondos suficientes en tu billetera.")
+            await interaction.followup.send(embed=self.economy.error_embed("Ya no dispones de los fondos suficientes en tu billetera."))
             return
 
         market_went_up = random.random() < 0.70 if self.trend else random.random() < 0.30
@@ -58,10 +63,16 @@ class CryptoView(discord.ui.View):
         
         if win:
             self.economy.update_balances(self.user_id, wallet_change=self.investment, bank_change=0)
-            await interaction.followup.send(f"🎉 ¡Operación Exitosa! El mercado se movió a tu favor y ganaste **${self.investment:,}** en efectivo.")
+            await interaction.followup.send(embed=self.economy.success_embed(
+                f"El mercado se movió a tu favor y ganaste **{self.economy.money(self.investment)}** en efectivo.",
+                title="Operación exitosa",
+            ))
         else:
             self.economy.update_balances(self.user_id, wallet_change=-self.investment, bank_change=0)
-            await interaction.followup.send(f"📉 ¡Liquidado! El mercado se movió en tu contra y perdiste los **${self.investment:,}** invertidos.")
+            await interaction.followup.send(embed=self.economy.error_embed(
+                f"El mercado se movió en tu contra y perdiste los **{self.economy.money(self.investment)}** invertidos.",
+                title="Liquidado",
+            ))
         self.stop()
 
 
@@ -252,7 +263,7 @@ class Economy(commands.Cog):
             "⚖️ Multa impuesta",
             "Se aplicó una multa a un usuario de economía.",
             user_id=user_id,
-            fields=[("💸 Monto", f"${amount:,}"), ("🧾 Multa nueva", f"${data['fine'] + amount:,}")],
+            fields=[("💸 Monto", self.money(amount)), ("🧾 Multa nueva", self.money(data['fine'] + amount))],
             color=discord.Color.red()
         ))
         return amount
@@ -276,7 +287,7 @@ class Economy(commands.Cog):
         wallet_to_pay = min(wallet_available, payable)
         bank_to_pay = payable - wallet_to_pay
 
-        self.update_balances(user_id, wallet_change=-wallet_to_pay, bank_change=-bank_to_pay, reason="Pago de multa", details=f"Pagó ${payable:,} de una multa pendiente.")
+        self.update_balances(user_id, wallet_change=-wallet_to_pay, bank_change=-bank_to_pay, reason="Pago de multa", details=f"Pagó {self.money(payable)} de una multa pendiente.")
         self.update_asset(user_id, "fine", data["fine"] - payable)
         return payable
 
@@ -311,7 +322,7 @@ class Economy(commands.Cog):
                 "💸 Ingreso pasivo cobrado",
                 "Se cobraron fondos pendientes de ingresos AFK o pasivos.",
                 user_id=user_id,
-                fields=[("💵 Billetera cobrada", f"${wallet_pending:,}"), ("🏦 Banco cobrado", f"${bank_pending:,}")],
+                fields=[("💵 Billetera cobrada", self.money(wallet_pending)), ("🏦 Banco cobrado", self.money(bank_pending))],
                 color=discord.Color.green()
             ))
         return wallet_pending, bank_pending
@@ -337,6 +348,23 @@ class Economy(commands.Cog):
 
     def is_staff(self, user: discord.Member) -> bool:
         return any(role.id in self.staff_roles for role in user.roles)
+
+    def money(self, amount) -> str:
+        return format_money(self.bot, amount)
+
+    def error_embed(self, description: str, title: str = None) -> discord.Embed:
+        return discord.Embed(
+            title=f"{error_emoji(self.bot)} {title or 'Ha ocurrido un error'}",
+            description=description,
+            color=discord.Color.red(),
+        )
+
+    def success_embed(self, description: str, title: str = None) -> discord.Embed:
+        return discord.Embed(
+            title=f"{success_emoji(self.bot)} {title or 'Listo'}",
+            description=description,
+            color=discord.Color.green(),
+        )
 
     def format_duration(self, seconds: float) -> str:
         total_seconds = max(0, int(seconds))
@@ -364,16 +392,26 @@ class Economy(commands.Cog):
     async def enforce_channel(self, ctx):
         if self.is_allowed_channel(ctx):
             return True
-        await ctx.send("🚫 Este sistema de economía solo está disponible en el canal designado. Ve a https://discord.com/channels/1359359447591419984/1375975206719586485", ephemeral=True)
+        await ctx.send(
+            embed=self.error_embed(
+                "Este sistema de economía solo está disponible en el canal designado. Ve a https://discord.com/channels/1359359447591419984/1375975206719586485",
+                title="Canal incorrecto",
+            ),
+            ephemeral=True,
+        )
         return False
 
     async def enforce_channel_interaction(self, interaction):
         if interaction.channel_id == self.allowed_channel_id:
             return True
+        embed = self.error_embed(
+            "Este sistema de economía solo está disponible en el canal designado. Ve a https://discord.com/channels/1359359447591419984/1375975206719586485",
+            title="Canal incorrecto",
+        )
         if interaction.response.is_done():
-            await interaction.followup.send("🚫 Este sistema de economía solo está disponible en el canal designado. Ve a https://discord.com/channels/1359359447591419984/1375975206719586485", ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
         else:
-            await interaction.response.send_message("🚫 Este sistema de economía solo está disponible en el canal designado. Ve a https://discord.com/channels/1359359447591419984/1375975206719586485", ephemeral=True)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
         return False
 
     def _user_label(self, user_id: int) -> str:
@@ -433,10 +471,10 @@ class Economy(commands.Cog):
 
         fields = [
             ("🔄 Motivo", reason),
-            ("💵 Cambio billetera", f"{wallet_change:+,}"),
-            ("🏦 Cambio banco", f"{bank_change:+,}"),
-            ("📊 Balance anterior", f"💵 ${before_wallet:,} | 🏦 ${before_bank:,}"),
-            ("📈 Nuevo balance", f"💵 ${new_wallet:,} | 🏦 ${new_bank:,}")
+            ("💵 Cambio billetera", f"{'+' if wallet_change >= 0 else '-'}{self.money(abs(wallet_change))}"),
+            ("🏦 Cambio banco", f"{'+' if bank_change >= 0 else '-'}{self.money(abs(bank_change))}"),
+            ("📊 Balance anterior", f"💵 {self.money(before_wallet)} | 🏦 {self.money(before_bank)}"),
+            ("📈 Nuevo balance", f"💵 {self.money(new_wallet)} | 🏦 {self.money(new_bank)}")
         ]
         if details:
             fields.append(("📝 Detalle", details))
@@ -480,7 +518,7 @@ class Economy(commands.Cog):
                 for index, (user_id, wallet, bank, total_money) in enumerate(rows, start=1):
                     member = channel.guild.get_member(user_id)
                     name = member.display_name if member else f"Usuario {user_id}"
-                    lines.append(f"{index}. {name} — 💵 ${wallet:,} | 🏦 ${bank:,} | 💰 ${total_money:,}")
+                    lines.append(f"{index}. {name} — 💵 {self.money(wallet)} | 🏦 {self.money(bank)} | 💰 {self.money(total_money)}")
 
                 description = (
                     "📅 " + datetime.datetime.now().strftime('%d/%m/%Y %H:%M') + "\n\n" + "\n".join(lines)
@@ -612,8 +650,8 @@ class Economy(commands.Cog):
         )
         embed.add_field(
             name="💳 Gestión Básica",
-            value="`&balance [usuario]` - Consulta el saldo en billetera y banco.\n"
-                  "`&daily` - Reclama tu bono diario de $500.\n"
+            value=f"`&balance [usuario]` - Consulta el saldo en billetera y banco.\n"
+                  f"`&daily` - Reclama tu bono diario de {self.money(500)}.\n"
                   "`&deposit <monto|all>` - Introduce tu efectivo en el banco seguro.\n"
                   "`&withdraw <monto|all>` - Retira tus fondos del banco.\n"
                   "`&give <usuario> <monto>` - Transfiere dinero directo a otro miembro.\n"
@@ -659,18 +697,18 @@ class Economy(commands.Cog):
         user = target_user or ctx.author
         if target_user and target_user != ctx.author:
             if not self.is_staff(ctx.author):
-                await ctx.send("❌ No tienes permiso para ver el balance de otros miembros.", ephemeral=True)
+                await ctx.send(embed=self.error_embed("No tienes permiso para ver el balance de otros miembros."), ephemeral=True)
                 return
                 
         user_data = self.get_user_data(user.id)
         
         embed = discord.Embed(title=f"Balance de {user.display_name}", color=discord.Color.green())
         embed.set_thumbnail(url=user.display_avatar.url)
-        embed.add_field(name="💵 Billetera", value=f"${user_data['wallet']:,}", inline=True)
-        embed.add_field(name="🏦 Banco", value=f"${user_data['bank']:,}", inline=True)
-        embed.add_field(name="⚠️ Multa pendiente", value=f"${user_data['fine']:,}", inline=True)
-        embed.add_field(name="⏳ Por cobrar", value=f"💵 ${user_data['pending_wallet']:,} / 🏦 ${user_data['pending_bank']:,}", inline=False)
-        embed.add_field(name="💰 Total", value=f"${(user_data['wallet'] + user_data['bank']):,}", inline=False)
+        embed.add_field(name="💵 Billetera", value=self.money(user_data['wallet']), inline=True)
+        embed.add_field(name="🏦 Banco", value=self.money(user_data['bank']), inline=True)
+        embed.add_field(name="⚠️ Multa pendiente", value=self.money(user_data['fine']), inline=True)
+        embed.add_field(name="⏳ Por cobrar", value=f"💵 {self.money(user_data['pending_wallet'])} / 🏦 {self.money(user_data['pending_bank'])}", inline=False)
+        embed.add_field(name="💰 Total", value=self.money(user_data['wallet'] + user_data['bank']), inline=False)
         embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
         
         await ctx.send(embed=embed)
@@ -681,21 +719,21 @@ class Economy(commands.Cog):
         if not await self.enforce_channel(ctx):
             return
         if not self.is_staff(ctx.author):
-            await ctx.send("❌ No tienes permiso para usar este comando.", ephemeral=True)
+            await ctx.send(embed=self.error_embed("No tienes permiso para usar este comando."), ephemeral=True)
             return
         if amount <= 0:
-            await ctx.send("❌ La cantidad debe ser mayor a cero.", ephemeral=True)
+            await ctx.send(embed=self.error_embed("La cantidad debe ser mayor a cero."), ephemeral=True)
             return
 
         scope = self.parse_balance_scope(scope_input)
         if scope is None:
-            await ctx.send("❌ Scope inválido. Usa: billetera, banco, ambos, 1, 2 o 3.", ephemeral=True)
+            await ctx.send(embed=self.error_embed("Scope inválido. Usa: billetera, banco, ambos, 1, 2 o 3."), ephemeral=True)
             return
 
         wallet_change = amount if scope in ("wallet", "both") else 0
         bank_change = amount if scope in ("bank", "both") else 0
         self.update_balances(target_user.id, wallet_change=wallet_change, bank_change=bank_change)
-        await ctx.send(f"✅ Se han añadido **${amount:,}** a {self.scope_label(scope)} de {target_user.mention}.")
+        await ctx.send(embed=self.success_embed(f"Se han añadido **{self.money(amount)}** a {self.scope_label(scope)} de {target_user.mention}."))
 
     @commands.hybrid_command(name="removemoney", description="Quita dinero de la billetera, banco o ambos de un usuario específico.")
     @app_commands.describe(target_user="Usuario afectado", amount="Monto de dinero", scope_input="billetera, banco o ambos")
@@ -703,33 +741,33 @@ class Economy(commands.Cog):
         if not await self.enforce_channel(ctx):
             return
         if not self.is_staff(ctx.author):
-            await ctx.send("❌ No tienes permiso para usar este comando.", ephemeral=True)
+            await ctx.send(embed=self.error_embed("No tienes permiso para usar este comando."), ephemeral=True)
             return
         if amount <= 0:
-            await ctx.send("❌ La cantidad debe ser mayor a cero.", ephemeral=True)
+            await ctx.send(embed=self.error_embed("La cantidad debe ser mayor a cero."), ephemeral=True)
             return
 
         scope = self.parse_balance_scope(scope_input)
         if scope is None:
-            await ctx.send("❌ Scope inválido. Usa: billetera, banco, ambos, 1, 2 o 3.", ephemeral=True)
+            await ctx.send(embed=self.error_embed("Scope inválido. Usa: billetera, banco, ambos, 1, 2 o 3."), ephemeral=True)
             return
 
         wallet_change = -amount if scope in ("wallet", "both") else 0
         bank_change = -amount if scope in ("bank", "both") else 0
         self.update_balances(target_user.id, wallet_change=wallet_change, bank_change=bank_change)
-        await ctx.send(f"✅ Se han retirado **${amount:,}** de {self.scope_label(scope)} de {target_user.mention}.")
+        await ctx.send(embed=self.success_embed(f"Se han retirado **{self.money(amount)}** de {self.scope_label(scope)} de {target_user.mention}."))
 
     @commands.hybrid_command(name="shop", description="Muestra el catálogo de la tienda de economía.")
     async def shop_prefix(self, ctx: commands.Context):
         if not await self.enforce_channel(ctx):
             return
         embed = discord.Embed(title="🏪 Tienda del Servidor", description="Utiliza `&buy <item>` o `/buy` para adquirir mejoras financieras.", color=discord.Color.gold())
-        embed.add_field(name="🛡️ seguro - $15,000", value="Mitiga pérdidas de dinero si sufres un robo con éxito.", inline=False)
-        embed.add_field(name="🏢 empresa - $75,000", value="Añade permanentemente un **75% más de ingresos** al usar `&work`.", inline=False)
-        embed.add_field(name="👥 empleado - $10,000", value="Genera ingresos pasivos recurrentes. Requiere Empresa. Máx 20.", inline=False)
-        embed.add_field(name="🥷 ladron - $12,000", value="Genera ingresos criminales automáticos. Requiere NO tener Empresa. Máx 5.", inline=False)
-        embed.add_field(name="📈 acciones_yt / acciones_ms - $5,000 / $4,500", value="Generan dividendos pasivos volátiles inyectados en el banco (pueden dar pérdidas).", inline=False)
-        embed.add_field(name="🏛️ mega_yt / mega_ms - $750,000 / $650,000", value="Adquiere monopolios absolutos para recibir masivas inyecciones de dinero.", inline=False)
+        embed.add_field(name=f"🛡️ seguro - {self.money(self.prices['seguro'])}", value="Mitiga pérdidas de dinero si sufres un robo con éxito.", inline=False)
+        embed.add_field(name=f"🏢 empresa - {self.money(self.prices['empresa'])}", value="Añade permanentemente un **75% más de ingresos** al usar `&work`.", inline=False)
+        embed.add_field(name=f"👥 empleado - {self.money(self.prices['empleado'])}", value="Genera ingresos pasivos recurrentes. Requiere Empresa. Máx 20.", inline=False)
+        embed.add_field(name=f"🥷 ladron - {self.money(self.prices['ladron'])}", value="Genera ingresos criminales automáticos. Requiere NO tener Empresa. Máx 5.", inline=False)
+        embed.add_field(name=f"📈 acciones_yt / acciones_ms - {self.money(self.prices['acciones_yt'])} / {self.money(self.prices['acciones_ms'])}", value="Generan dividendos pasivos volátiles inyectados en el banco (pueden dar pérdidas).", inline=False)
+        embed.add_field(name=f"🏛️ mega_yt / mega_ms - {self.money(self.prices['mega_yt'])} / {self.money(self.prices['mega_ms'])}", value="Adquiere monopolios absolutos para recibir masivas inyecciones de dinero.", inline=False)
         await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="buy", description="Compra un artículo o inversión de la tienda.")
@@ -742,45 +780,45 @@ class Economy(commands.Cog):
         item_key = item_name.lower()
         
         if item_key not in self.prices:
-            await ctx.send("❌ Ese artículo no se encuentra disponible en la tienda. Revisa `&shop`.")
+            await ctx.send(embed=self.error_embed("Ese artículo no se encuentra disponible en la tienda. Revisa `&shop`."))
             return
             
         cost = self.prices[item_key]
         if data["wallet"] < cost:
-            await ctx.send(f"❌ Fondos insuficientes en tu billetera. Necesitas **${cost:,}**.")
+            await ctx.send(embed=self.error_embed(f"Fondos insuficientes en tu billetera. Necesitas **{self.money(cost)}**."))
             return
 
         if item_key == "seguro":
             if data["insurance"] == 1:
-                await ctx.send("❌ Ya tienes contratado un Seguro de Banco.")
+                await ctx.send(embed=self.error_embed("Ya tienes contratado un Seguro de Banco."))
                 return
             self.update_asset(user_id, "insurance", 1)
             
         elif item_key == "empresa":
             if data["company"] == 1:
-                await ctx.send("❌ Ya eres propietario de una Empresa.")
+                await ctx.send(embed=self.error_embed("Ya eres propietario de una Empresa."))
                 return
             if data["robbery_employees"] > 0:
-                await ctx.send("❌ No puedes fundar una empresa legal si tienes contratados Empleados de Robo.")
+                await ctx.send(embed=self.error_embed("No puedes fundar una empresa legal si tienes contratados Empleados de Robo."))
                 return
             self.update_asset(user_id, "company", 1)
             
         elif item_key == "empleado":
             if data["company"] == 0:
-                await ctx.send("❌ Necesitas comprar primero una Empresa legal para poder contratar empleados.")
+                await ctx.send(embed=self.error_embed("Necesitas comprar primero una Empresa legal para poder contratar empleados."))
                 return
             if data["employees"] >= 20:
-                await ctx.send("❌ Has alcanzado el límite máximo permitido de 20 empleados.")
+                await ctx.send(embed=self.error_embed("Has alcanzado el límite máximo permitido de 20 empleados."))
                 return
             self.update_asset(user_id, "employees", data["employees"] + 1)
             self.update_asset(user_id, "last_salary_pay", datetime.datetime.now().isoformat())
             
         elif item_key == "ladron":
             if data["company"] == 1:
-                await ctx.send("❌ Tienes una empresa legal constituida. No puedes contratar Empleados de Robo.")
+                await ctx.send(embed=self.error_embed("Tienes una empresa legal constituida. No puedes contratar Empleados de Robo."))
                 return
             if data["robbery_employees"] >= 5:
-                await ctx.send("❌ Has alcanzado el límite máximo de 5 Empleados de Robo.")
+                await ctx.send(embed=self.error_embed("Has alcanzado el límite máximo de 5 Empleados de Robo."))
                 return
             self.update_asset(user_id, "robbery_employees", data["robbery_employees"] + 1)
             self.update_asset(user_id, "last_salary_pay", datetime.datetime.now().isoformat())
@@ -795,13 +833,13 @@ class Economy(commands.Cog):
             mega_id = item_key.replace("mega_", "")
             current_megas = data["mega_companies"]
             if mega_id in current_megas:
-                await ctx.send(f"❌ Ya eres el dueño de la multinacional {mega_id.upper()}.")
+                await ctx.send(embed=self.error_embed(f"Ya eres el dueño de la multinacional {mega_id.upper()}."))
                 return
             current_megas.append(mega_id)
             self.update_asset(user_id, "mega_companies", json.dumps(current_megas))
 
         self.update_balances(user_id, wallet_change=-cost, bank_change=0)
-        await ctx.send(f"🛍️ ¡Has comprado **{item_name}** con éxito por **${cost:,}**!")
+        await ctx.send(embed=self.success_embed(f"¡Has comprado **{item_name}** con éxito por **{self.money(cost)}**!", title="Compra realizada"))
 
     @commands.hybrid_command(name="salarypay", description="Paga los salarios de tus empleados contratados.")
     async def salary_pay_prefix(self, ctx: commands.Context):
@@ -811,7 +849,7 @@ class Economy(commands.Cog):
         data = self.get_user_data(user_id)
         
         if data["employees"] == 0 and data["robbery_employees"] == 0:
-            await ctx.send("❌ No posees empleados contratados que requieran nómina.")
+            await ctx.send(embed=self.error_embed("No posees empleados contratados que requieran nómina."))
             return
             
         cost_per_employee = 800 if data["employees"] > 0 else 1200
@@ -819,12 +857,12 @@ class Economy(commands.Cog):
         total_salary_cost = total_count * cost_per_employee
         
         if data["wallet"] < total_salary_cost:
-            await ctx.send(f"❌ Dinero insuficiente en tu billetera. Necesitas **${total_salary_cost:,}**.")
+            await ctx.send(embed=self.error_embed(f"Dinero insuficiente en tu billetera. Necesitas **{self.money(total_salary_cost)}**."))
             return
             
-        self.update_balances(user_id, wallet_change=-total_salary_cost, bank_change=0, reason="Nómina", details=f"Pagaste ${total_salary_cost:,} de salarios a tus empleados.")
+        self.update_balances(user_id, wallet_change=-total_salary_cost, bank_change=0, reason="Nómina", details=f"Pagaste {self.money(total_salary_cost)} de salarios a tus empleados.")
         self.update_asset(user_id, "last_salary_pay", datetime.datetime.now().isoformat())
-        await ctx.send(f"💼 Nómina pagada por **${total_salary_cost:,}**. Contrato renovado por 24 horas.")
+        await ctx.send(embed=self.success_embed(f"Nómina pagada por **{self.money(total_salary_cost)}**. Contrato renovado por 24 horas.", title="Nómina pagada"))
 
     @commands.hybrid_command(name="work", description="Trabaja para conseguir dinero legal de forma activa.")
     @commands.cooldown(1, 30, commands.BucketType.user)
@@ -841,8 +879,8 @@ class Economy(commands.Cog):
         if data["fine"] > 0:
             base_earnings = int(base_earnings * 0.25)
             
-        self.update_balances(user_id, wallet_change=base_earnings, bank_change=0, reason="Trabajo", details=f"Ganaste ${base_earnings:,} trabajando.")
-        await ctx.send(f"💰 ¡Trabajaste duro y ganaste **${base_earnings}**!")
+        self.update_balances(user_id, wallet_change=base_earnings, bank_change=0, reason="Trabajo", details=f"Ganaste {self.money(base_earnings)} trabajando.")
+        await ctx.send(embed=self.success_embed(f"¡Trabajaste duro y ganaste **{self.money(base_earnings)}**!", title="Turno completado"))
 
     @commands.hybrid_command(name="crime", description="Comete un crimen ilegal para conseguir dinero rápido.")
     @commands.cooldown(1, 180, commands.BucketType.user)
@@ -856,12 +894,13 @@ class Economy(commands.Cog):
             payout = random.randint(800, 1500)
             if data["fine"] > 0:
                 payout = int(payout * 0.25)
-            self.update_balances(user_id, wallet_change=payout, bank_change=0, reason="Crimen", details=f"Tu crimen salió bien y ganaste ${payout:,}.")
-            await ctx.send(f"🥷 ¡El atraco fue un éxito! Obtuviste **${payout:,}**.")
+            self.update_balances(user_id, wallet_change=payout, bank_change=0, reason="Crimen", details=f"Tu crimen salió bien y ganaste {self.money(payout)}.")
+            await ctx.send(embed=self.success_embed(f"¡El atraco fue un éxito! Obtuviste **{self.money(payout)}**.", title="Golpe exitoso"))
         else:
             penalty = random.randint(400, 900)
             self.apply_fine(user_id, penalty)
-            await ctx.send(f"🚨 ¡Te atraparon cometiendo el crimen! Te impusieron una multa de **${penalty:,}**. Usa `&pay` para pagarla.")
+            await ctx.send(embed=self.error_embed(f"¡Te atraparon cometiendo el crimen! Te impusieron una multa de **{self.money(penalty)}**. Usa `&pay` para pagarla.", title="Atrapado"))
+
     @commands.hybrid_command(name="steal", description="Intenta desvalijar la cartera de alguien.")
     @commands.cooldown(1, 3600, commands.BucketType.user)
     @app_commands.describe(target_member="El usuario al que intentas robar.")
@@ -869,7 +908,7 @@ class Economy(commands.Cog):
         if not await self.enforce_channel(ctx):
             return
         if target_member == ctx.author:
-            await ctx.send("❌ No puedes robarte a ti mismo.")
+            await ctx.send(embed=self.error_embed("No puedes robarte a ti mismo."))
             return
             
         thief_id = ctx.author.id
@@ -878,15 +917,15 @@ class Economy(commands.Cog):
         
         total_stealable = victim_data["wallet"] + int(victim_data["bank"] * 0.10)
         if total_stealable <= 100:
-            await ctx.send("❌ Este objetivo no tiene suficiente dinero para valer la pena.")
+            await ctx.send(embed=self.error_embed("Este objetivo no tiene suficiente dinero para valer la pena."))
             return
             
         if random.random() < 0.50:
             if random.random() < 0.50:
                 self.apply_fine(thief_id, 10000)
-                await ctx.send(f"❌ Intentaste abrir la mochila de {target_member.name} pero fallaste y además te impusieron una multa de **$10,000**. Usa `&pay` para saldarla.")
+                await ctx.send(embed=self.error_embed(f"Intentaste abrir la mochila de {target_member.name} pero fallaste y además te impusieron una multa de **{self.money(10000)}**. Usa `&pay` para saldarla.", title="Robo fallido"))
             else:
-                await ctx.send(f"❌ Intentaste abrir la mochila de {target_member.name} pero fallaste y escapaste corriendo.")
+                await ctx.send(embed=self.error_embed(f"Intentaste abrir la mochila de {target_member.name} pero fallaste y escapaste corriendo.", title="Robo fallido"))
             return
             
         wallet_stolen = victim_data["wallet"]
@@ -896,16 +935,16 @@ class Economy(commands.Cog):
         if victim_data["insurance"] == 1:
             insurance_roll = random.random()
             if insurance_roll < 0.34:
-                await ctx.send(f"🛡️ Intentaste robar a {target_member.name}, pero su **Seguro de Banco** bloqueó todo acceso a sus fondos.")
+                await ctx.send(embed=self.error_embed(f"Intentaste robar a {target_member.name}, pero su **Seguro de Banco** bloqueó todo acceso a sus fondos.", title="Robo bloqueado"))
                 return
             elif insurance_roll < 0.67:
                 final_stolen_amount = int(final_stolen_amount * 0.5)
                 wallet_stolen = int(wallet_stolen * 0.5)
                 bank_stolen = int(bank_stolen * 0.5)
-                await ctx.send(f"🛡️ El **Seguro de Banco** de {target_member.name} mitigó parcialmente el impacto.")
+                await ctx.send(embed=self.error_embed(f"El **Seguro de Banco** de {target_member.name} mitigó parcialmente el impacto.", title="Robo mitigado"))
 
         self.update_balances(victim_id, wallet_change=-wallet_stolen, bank_change=-bank_stolen, reason="Robo", details=f"Se le retiraron fondos tras un intento de robo.", target_user_id=thief_id)
-        self.update_balances(thief_id, wallet_change=final_stolen_amount, bank_change=0, reason="Robo", details=f"Robaste ${final_stolen_amount:,} a {target_member.name}.", actor_id=thief_id, target_user_id=victim_id)
+        self.update_balances(thief_id, wallet_change=final_stolen_amount, bank_change=0, reason="Robo", details=f"Robaste {self.money(final_stolen_amount)} a {target_member.name}.", actor_id=thief_id, target_user_id=victim_id)
         
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
@@ -914,7 +953,7 @@ class Economy(commands.Cog):
         conn.commit()
         conn.close()
         
-        await ctx.send(f"💸 ¡Robo completado con éxito! Le quitaste **${final_stolen_amount:,}** a {target_member.mention}.")
+        await ctx.send(embed=self.success_embed(f"¡Robo completado con éxito! Le quitaste **{self.money(final_stolen_amount)}** a {target_member.mention}.", title="Robo exitoso"))
 
     @commands.hybrid_command(name="sue", description="Demanda legalmente a un usuario que te robó dinero hace poco.")
     @app_commands.describe(target_thief="El presunto ladrón al que vas a demandar.")
@@ -931,7 +970,7 @@ class Economy(commands.Cog):
         
         if not row:
             conn.close()
-            await ctx.send(f"❌ No tienes registros de robos recientes sin resolver contra {target_thief.name}.")
+            await ctx.send(embed=self.error_embed(f"No tienes registros de robos recientes sin resolver contra {target_thief.name}."))
             return
             
         stolen_amount, record_rowid = row
@@ -941,11 +980,11 @@ class Economy(commands.Cog):
         
         if random.random() < 0.50:
             compensation = int(stolen_amount * 1.10)
-            self.update_balances(thief_id, wallet_change=-compensation, bank_change=0, reason="Demanda", details=f"Pagaste ${compensation:,} por una demanda judicial.")
-            self.update_balances(victim_id, wallet_change=compensation, bank_change=0, reason="Demanda", details=f"Recibiste ${compensation:,} por una demanda judicial.")
-            await ctx.send(f"⚖️ ¡Anulaste las defensas de {target_thief.mention} en la corte! Recibiste **${compensation:,}** por el robo y daños.")
+            self.update_balances(thief_id, wallet_change=-compensation, bank_change=0, reason="Demanda", details=f"Pagaste {self.money(compensation)} por una demanda judicial.")
+            self.update_balances(victim_id, wallet_change=compensation, bank_change=0, reason="Demanda", details=f"Recibiste {self.money(compensation)} por una demanda judicial.")
+            await ctx.send(embed=self.success_embed(f"¡Anulaste las defensas de {target_thief.mention} en la corte! Recibiste **{self.money(compensation)}** por el robo y daños.", title="Demanda ganada"))
         else:
-            await ctx.send(f"⚖️ Perdiste el juicio contra {target_thief.name} por falta de pruebas.")
+            await ctx.send(embed=self.error_embed(f"Perdiste el juicio contra {target_thief.name} por falta de pruebas.", title="Demanda perdida"))
 
     @commands.hybrid_command(name="give", description="Transfiere una cantidad de efectivo a otro miembro.")
     @app_commands.describe(target_member="Usuario que recibe el dinero", amount="Monto a dar")
@@ -953,20 +992,20 @@ class Economy(commands.Cog):
         if not await self.enforce_channel(ctx):
             return
         if target_member == ctx.author:
-            await ctx.send("❌ No puedes transferir fondos a ti mismo.")
+            await ctx.send(embed=self.error_embed("No puedes transferir fondos a ti mismo."))
             return
         if amount <= 0:
-            await ctx.send("❌ La cantidad debe ser superior a cero.")
+            await ctx.send(embed=self.error_embed("La cantidad debe ser superior a cero."))
             return
             
         sender_data = self.get_user_data(ctx.author.id)
         if sender_data["wallet"] < amount:
-            await ctx.send("❌ No cuentas con suficiente efectivo disponible en tu billetera.")
+            await ctx.send(embed=self.error_embed("No cuentas con suficiente efectivo disponible en tu billetera."))
             return
             
-        self.update_balances(ctx.author.id, wallet_change=-amount, bank_change=0, reason="Transferencia", details=f"Transferiste ${amount:,} a {target_member.name}.", actor_id=ctx.author.id, target_user_id=target_member.id)
-        self.update_balances(target_member.id, wallet_change=amount, bank_change=0, reason="Transferencia", details=f"Recibiste ${amount:,} de {ctx.author.name}.", actor_id=ctx.author.id, target_user_id=target_member.id)
-        await ctx.send(f"🤝 Has transferido **${amount:,}** a la billetera de {target_member.mention}.")
+        self.update_balances(ctx.author.id, wallet_change=-amount, bank_change=0, reason="Transferencia", details=f"Transferiste {self.money(amount)} a {target_member.name}.", actor_id=ctx.author.id, target_user_id=target_member.id)
+        self.update_balances(target_member.id, wallet_change=amount, bank_change=0, reason="Transferencia", details=f"Recibiste {self.money(amount)} de {ctx.author.name}.", actor_id=ctx.author.id, target_user_id=target_member.id)
+        await ctx.send(embed=self.success_embed(f"Has transferido **{self.money(amount)}** a la billetera de {target_member.mention}.", title="Transferencia completada"))
 
     @commands.hybrid_command(name="crypto", description="Invierte en un broker simulado de criptomonedas.")
     @app_commands.describe(investment="Cantidad de efectivo que quieres arriesgar.")
@@ -977,16 +1016,16 @@ class Economy(commands.Cog):
         user_data = self.get_user_data(user_id)
         
         if investment <= 0:
-            await ctx.send("❌ La cantidad a invertir debe ser mayor a cero.")
+            await ctx.send(embed=self.error_embed("La cantidad a invertir debe ser mayor a cero."))
             return
         if user_data["wallet"] < investment:
-            await ctx.send("❌ No tienes suficiente dinero en tu billetera.")
+            await ctx.send(embed=self.error_embed("No tienes suficiente dinero en tu billetera."))
             return
             
         trend_positive = random.choice([True, False])
         trend_text = "📈 POSITIVA" if trend_positive else "📉 NEGATIVA"
         
-        embed = discord.Embed(title="🛸 Broker de Criptomonedas", description=f"Análisis en tiempo real:\nTendencia estimada: **{trend_text}**\nMonto en juego: **${investment:,}**\n\n¿Qué acción deseas ejecutar?", color=discord.Color.purple())
+        embed = discord.Embed(title="🛸 Broker de Criptomonedas", description=f"Análisis en tiempo real:\nTendencia estimada: **{trend_text}**\nMonto en juego: **{self.money(investment)}**\n\n¿Qué acción deseas ejecutar?", color=discord.Color.purple())
         
         view = CryptoView(self, user_id, investment, trend_positive)
         await ctx.send(embed=embed, view=view)
@@ -1007,13 +1046,9 @@ class Economy(commands.Cog):
             await ctx.send(embed=embed)
             return
 
-        embed = discord.Embed(
-            title="✅ Cobro completado",
-            description="Tu dinero pasivo ha sido transferido a tus cuentas.",
-            color=discord.Color.green()
-        )
-        embed.add_field(name="💵 Billetera", value=f"${wallet_collected:,}", inline=True)
-        embed.add_field(name="🏦 Banco", value=f"${bank_collected:,}", inline=True)
+        embed = self.success_embed("Tu dinero pasivo ha sido transferido a tus cuentas.", title="Cobro completado")
+        embed.add_field(name="💵 Billetera", value=self.money(wallet_collected), inline=True)
+        embed.add_field(name="🏦 Banco", value=self.money(bank_collected), inline=True)
         embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
         await ctx.send(embed=embed)
 
@@ -1043,14 +1078,14 @@ class Economy(commands.Cog):
         if data["employees"] > 0:
             min_income = data["employees"] * 150
             max_income = data["employees"] * 400
-            summary_lines.append(f"👥 Empleados legales: entre **${min_income:,}** y **${max_income:,}** por ciclo")
+            summary_lines.append(f"👥 Empleados legales: entre **{self.money(min_income)}** y **{self.money(max_income)}** por ciclo")
 
         if data["robbery_employees"] > 0:
             summary_lines.append(f"🥷 Empleados de robo: ingresos variables, con posibilidad de generar efectivo adicional por ciclo")
 
         if data["mega_companies"]:
             mega_total = len(data["mega_companies"])
-            summary_lines.append(f"🏛️ Megacorporaciones: **${mega_total * 5000:,}** a **${mega_total * 15000:,}** por ciclo")
+            summary_lines.append(f"🏛️ Megacorporaciones: **{self.money(mega_total * 5000)}** a **{self.money(mega_total * 15000)}** por ciclo")
 
         if data["stocks"]:
             for stock_name, count in data["stocks"].items():
@@ -1065,7 +1100,7 @@ class Economy(commands.Cog):
         )
         embed.add_field(name="⏰ Próxima generación", value=self.format_duration(next_cycle_seconds), inline=False)
         embed.add_field(name="📦 Activos que generan dinero", value="\n".join(summary_lines), inline=False)
-        embed.add_field(name="💸 Pendiente por cobrar", value=f"💵 ${data['pending_wallet']:,} / 🏦 ${data['pending_bank']:,}", inline=False)
+        embed.add_field(name="💸 Pendiente por cobrar", value=f"💵 {self.money(data['pending_wallet'])} / 🏦 {self.money(data['pending_bank'])}", inline=False)
         embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
         await ctx.send(embed=embed)
 
@@ -1077,7 +1112,7 @@ class Economy(commands.Cog):
         user_id = ctx.author.id
         data = self.get_user_data(user_id)
         if data["fine"] <= 0:
-            await ctx.send("✅ No tienes multas pendientes.")
+            await ctx.send(embed=self.success_embed("No tienes multas pendientes."))
             return
 
         if amount_input.lower() == "all":
@@ -1086,21 +1121,21 @@ class Economy(commands.Cog):
             try:
                 amount = int(amount_input)
             except ValueError:
-                await ctx.send("❌ Cantidad inválida.")
+                await ctx.send(embed=self.error_embed("Cantidad inválida."))
                 return
 
         if amount <= 0:
-            await ctx.send("❌ La cantidad debe ser mayor a cero.")
+            await ctx.send(embed=self.error_embed("La cantidad debe ser mayor a cero."))
             return
 
         paid = self.pay_fine(user_id, amount)
         if paid <= 0:
-            await ctx.send("❌ No tienes fondos suficientes para pagar esa cantidad.")
+            await ctx.send(embed=self.error_embed("No tienes fondos suficientes para pagar esa cantidad."))
             return
 
         remaining = max(0, data["fine"] - paid)
-        embed = discord.Embed(title="💳 Pago de multa", description=f"Pagaste **${paid:,}** de tu multa pendiente.", color=discord.Color.green())
-        embed.add_field(name="Restante", value=f"${remaining:,}", inline=False)
+        embed = self.success_embed(f"Pagaste **{self.money(paid)}** de tu multa pendiente.", title="Pago de multa")
+        embed.add_field(name="Restante", value=self.money(remaining), inline=False)
         await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="daily", description="Reclama tu recompensa financiera diaria.")
@@ -1112,13 +1147,13 @@ class Economy(commands.Cog):
         current_date_str = datetime.date.today().isoformat()
         
         if user_data["last_daily"] == current_date_str:
-            await ctx.send("❌ Ya has reclamado tu recompensa diaria hoy.")
+            await ctx.send(embed=self.error_embed("Ya has reclamado tu recompensa diaria hoy."))
             return
             
         daily_reward = 500
-        self.update_balances(user_id, wallet_change=daily_reward, bank_change=0, reason="Daily", details=f"Reclamaste el bono diario de ${daily_reward:,}.")
+        self.update_balances(user_id, wallet_change=daily_reward, bank_change=0, reason="Daily", details=f"Reclamaste el bono diario de {self.money(daily_reward)}.")
         self.update_asset(user_id, "last_daily", current_date_str)
-        await ctx.send(f"🎁 ¡Has reclamado tus **${daily_reward}** del bono diario!")
+        await ctx.send(embed=self.success_embed(f"¡Has reclamado tus **{self.money(daily_reward)}** del bono diario!", title="Bono diario reclamado"))
 
     @commands.hybrid_command(name="deposit", aliases=["dep"], description="Deposita dinero de tu billetera al banco.")
     @app_commands.describe(amount_input="Cantidad de dinero numérico o escribe 'all'.")
@@ -1135,15 +1170,15 @@ class Economy(commands.Cog):
             try:
                 amount = int(amount_input)
             except ValueError:
-                await ctx.send("❌ Cantidad inválida.")
+                await ctx.send(embed=self.error_embed("Cantidad inválida."))
                 return
                 
         if amount <= 0 or amount > wallet_balance:
-            await ctx.send("❌ Cantidad inválida o fondos insuficientes.")
+            await ctx.send(embed=self.error_embed("Cantidad inválida o fondos insuficientes."))
             return
             
-        self.update_balances(user_id, wallet_change=-amount, bank_change=amount, reason="Depósito", details=f"Depositaste ${amount:,} en el banco.")
-        await ctx.send(f"🏦 Depositados **${amount:,}** en el banco.")
+        self.update_balances(user_id, wallet_change=-amount, bank_change=amount, reason="Depósito", details=f"Depositaste {self.money(amount)} en el banco.")
+        await ctx.send(embed=self.success_embed(f"Depositados **{self.money(amount)}** en el banco.", title="Depósito realizado"))
 
     @commands.hybrid_command(name="withdraw", aliases=["with"], description="Retira dinero de tu cuenta bancaria a tu billetera.")
     @app_commands.describe(amount_input="Cantidad de dinero numérico o escribe 'all'.")
@@ -1160,15 +1195,15 @@ class Economy(commands.Cog):
             try:
                 amount = int(amount_input)
             except ValueError:
-                await ctx.send("❌ Cantidad inválida.")
+                await ctx.send(embed=self.error_embed("Cantidad inválida."))
                 return
                 
         if amount <= 0 or amount > bank_balance:
-            await ctx.send("❌ Cantidad inválida o fondos insuficientes.")
+            await ctx.send(embed=self.error_embed("Cantidad inválida o fondos insuficientes."))
             return
             
-        self.update_balances(user_id, wallet_change=amount, bank_change=-amount, reason="Retiro", details=f"Retiraste ${amount:,} del banco.")
-        await ctx.send(f"💵 Retirados **${amount:,}** de tu cuenta bancaria.")
+        self.update_balances(user_id, wallet_change=amount, bank_change=-amount, reason="Retiro", details=f"Retiraste {self.money(amount)} del banco.")
+        await ctx.send(embed=self.success_embed(f"Retirados **{self.money(amount)}** de tu cuenta bancaria.", title="Retiro realizado"))
 
     # --- TOP COMMAND (LIMIT 100) ---
     @commands.hybrid_command(name="top", aliases=["leaderboard", "ricos"], description="Muestra la lista de los usuarios con más dinero.")
@@ -1187,7 +1222,7 @@ class Economy(commands.Cog):
         conn.close()
 
         if not top_users:
-            await ctx.send("🪙 La base de datos de economía está vacía actualmente.")
+            await ctx.send(embed=self.error_embed("La base de datos de economía está vacía actualmente.", title="Sin datos"))
             return
 
         author_rank = "Fuera del Top 100"
@@ -1229,12 +1264,13 @@ class Economy(commands.Cog):
             else:
                 medal = f"**#{index + 1}**"
                 
-            leaderboard_text += f"{medal} **{name}** — ${total:,} *(💵 ${wallet:,} / 🏦 ${bank:,})*\n"
+            leaderboard_text += f"{medal} **{name}** — {self.money(total)} *(💵 {self.money(wallet)} / 🏦 {self.money(bank)})*\n"
 
         embed.description += leaderboard_text
-        
+        embed.add_field(name="📍 Tu posición", value=f"{author_rank} — Fortuna actual: {self.money(author_total)}", inline=False)
+
         embed.set_footer(
-            text=f"Tu Posición: {author_rank} | Fortuna Actual: ${author_total:,}",
+            text=f"Tu posición: {author_rank}",
             icon_url=ctx.author.display_avatar.url
         )
         embed.timestamp = datetime.datetime.now(datetime.timezone.utc)

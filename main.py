@@ -5,6 +5,7 @@ import os
 import sys
 import time
 from backup_economy import backup_if_needed
+from emojis import error_emoji
 
 class MyBot(commands.Bot):
     def __init__(self):
@@ -61,8 +62,8 @@ def format_cooldown_duration(seconds: float) -> str:
 
 def build_cooldown_embed(retry_after: float) -> discord.Embed:
     return discord.Embed(
-        title="⏳ Cooldown activo",
-        description=f"💤 Tranquilo, vuelve a intentarlo en {format_cooldown_duration(retry_after)}.",
+        title=f"{error_emoji(bot)} Cooldown activo",
+        description=f"Tranquilo, vuelve a intentarlo en {format_cooldown_duration(retry_after)}.",
         color=discord.Color.orange()
     )
 
@@ -73,16 +74,16 @@ async def on_command_error(ctx, error):
         await ctx.send(embed=build_cooldown_embed(error.retry_after))
         return
     if isinstance(error, commands.MissingPermissions):
-        await ctx.send("Error: No cuenta con los permisos necesarios para ejecutar este comando.")
+        await ctx.send(embed=discord.Embed(title=f"{error_emoji(bot)} Error", description="No cuentas con los permisos necesarios para ejecutar este comando.", color=discord.Color.red()))
     elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send(f"Error: Argumentos insuficientes. Uso correcto: {ctx.prefix}{ctx.command.name} [argumentos]")
+        await ctx.send(embed=discord.Embed(title=f"{error_emoji(bot)} Error", description=f"Argumentos insuficientes. Uso correcto: `{ctx.prefix}{ctx.command.name} [argumentos]`", color=discord.Color.red()))
     elif isinstance(error, commands.BadArgument):
-        await ctx.send("Error: Los argumentos proporcionados no son validos.")
+        await ctx.send(embed=discord.Embed(title=f"{error_emoji(bot)} Error", description="Los argumentos proporcionados no son válidos.", color=discord.Color.red()))
     elif isinstance(error, commands.CommandInvokeError) and isinstance(error.original, discord.Forbidden):
-        await ctx.send("Error: El bot no tiene permisos suficientes o jerarquia para realizar esta accion.")
+        await ctx.send(embed=discord.Embed(title=f"{error_emoji(bot)} Error", description="El bot no tiene permisos suficientes o jerarquía para realizar esta acción.", color=discord.Color.red()))
     else:
         print(f"Prefix command error detected: {error}")
-        await ctx.send(f"Ocurrio un error imprevisto: {error}")
+        await ctx.send(embed=discord.Embed(title=f"{error_emoji(bot)} Error inesperado", description=f"Ocurrió un error imprevisto: {error}", color=discord.Color.red()))
 
 # --- GLOBAL SLASH COMMAND ERROR HANDLING ---
 @bot.tree.error
@@ -94,15 +95,16 @@ async def on_app_command_error(interaction: discord.Interaction, error):
             await interaction.response.send_message(embed=build_cooldown_embed(error.retry_after), ephemeral=True)
         return
     if isinstance(error, discord.app_commands.MissingPermissions):
-        await interaction.response.send_message("Error: No cuenta con los permisos necesarios para ejecutar este comando.", ephemeral=True)
+        await interaction.response.send_message(embed=discord.Embed(title=f"{error_emoji(bot)} Error", description="No cuentas con los permisos necesarios para ejecutar este comando.", color=discord.Color.red()), ephemeral=True)
     elif isinstance(error, discord.app_commands.CommandInvokeError) and isinstance(error.original, discord.Forbidden):
-        await interaction.response.send_message("Error: El bot no tiene permisos suficientes o jerarquia para realizar esta accion.", ephemeral=True)
+        await interaction.response.send_message(embed=discord.Embed(title=f"{error_emoji(bot)} Error", description="El bot no tiene permisos suficientes o jerarquía para realizar esta acción.", color=discord.Color.red()), ephemeral=True)
     else:
         print(f"Slash command error detected: {error}")
+        embed = discord.Embed(title=f"{error_emoji(bot)} Error inesperado", description=f"Ocurrió un error de ejecución: {error}", color=discord.Color.red())
         if interaction.response.is_done():
-            await interaction.followup.send(f"Ocurrio un error de ejecucion: {error}")
+            await interaction.followup.send(embed=embed)
         else:
-            await interaction.response.send_message(f"Ocurrio un error imprevisto: {error}", ephemeral=True)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # Run the bot with your token from the environment
 TOKEN = os.environ.get("DISCORD_TOKEN")
