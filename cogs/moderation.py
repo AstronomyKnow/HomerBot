@@ -75,6 +75,14 @@ class Moderation(commands.Cog):
                 created_at TEXT NOT NULL
             )
         """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS member_first_join (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                first_joined_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, user_id)
+            )
+        """)
         conn.commit()
         conn.close()
 
@@ -307,6 +315,20 @@ class Moderation(commands.Cog):
         rows = cursor.fetchall()
         conn.close()
         return rows
+
+    def is_first_join(self, guild_id, user_id):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM member_first_join WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
+        already_joined = cursor.fetchone() is not None
+        if not already_joined:
+            cursor.execute(
+                "INSERT INTO member_first_join (guild_id, user_id, first_joined_at) VALUES (?, ?, ?)",
+                (guild_id, user_id, datetime.datetime.now(datetime.timezone.utc).isoformat())
+            )
+            conn.commit()
+        conn.close()
+        return not already_joined
 
     async def execute_clean(self, channel, amount: int):
         if amount <= 0:
@@ -776,8 +798,42 @@ class Moderation(commands.Cog):
         embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
         await ctx.send(embed=embed)
 
+    async def send_welcome_dm(self, member):
+        try:
+            embed = discord.Embed(
+                title=f"👋 ¡Bienvenido a {member.guild.name}!",
+                description=f"Nos alegra tenerte por aquí, {member.mention}. ¡Esperamos que disfrutes tu estadía!",
+                color=discord.Color.yellow(),
+            )
+            if member.guild.icon:
+                embed.set_thumbnail(url=member.guild.icon.url)
+            embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
+            dm_channel = member.dm_channel or await member.create_dm()
+            await dm_channel.send(embed=embed)
+        except (discord.Forbidden, discord.HTTPException) as error:
+            print(f"No se pudo enviar el MD de bienvenida a {member}: {error}")
+
+    async def send_farewell_dm(self, member):
+        try:
+            embed = discord.Embed(
+                title=f"👋 Has salido de {member.guild.name}",
+                description="Gracias por haber sido parte de la comunidad. ¡Esperamos verte de nuevo pronto!",
+                color=discord.Color.yellow(),
+            )
+            embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
+            dm_channel = member.dm_channel or await member.create_dm()
+            await dm_channel.send(embed=embed)
+        except (discord.Forbidden, discord.HTTPException) as error:
+            # Si el servidor que abandonó era el único en común con el bot,
+            # Discord ya no permite enviarle mensajes directos; no hay forma
+            # de evitar esto desde la API.
+            print(f"No se pudo enviar el MD de despedida a {member}: {error}")
+
     @commands.Cog.listener()
     async def on_member_join(self, member):
+        if self.is_first_join(member.guild.id, member.id):
+            await self.send_welcome_dm(member)
+
         channel = await self.get_log_channel(member.guild)
         if not channel:
             return
@@ -789,6 +845,8 @@ class Moderation(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_remove(self, member):
+        await self.send_farewell_dm(member)
+
         channel = await self.get_log_channel(member.guild)
         if not channel:
             return
