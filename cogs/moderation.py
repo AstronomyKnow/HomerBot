@@ -877,6 +877,7 @@ class Moderation(commands.Cog):
         api_latency_ms = round(self.bot.latency * 1000)
 
         embed = discord.Embed(title="Diagnóstico de Estado del Sistema", color=discord.Color.blue())
+        embed.add_field(name="Versión", value="1.0, La Actualización Ilegal", inline=True)
         embed.add_field(name="Latencia de la API", value=f"{api_latency_ms} ms", inline=True)
         embed.add_field(name="Tiempo de actividad", value=uptime_string, inline=True)
         embed.add_field(name="Uso de memoria", value=f"{memory_usage_mb:.2f} MB", inline=True)
