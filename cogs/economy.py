@@ -2160,8 +2160,7 @@ class Economy(commands.Cog):
 
     @commands.hybrid_command(name="blackmarket", aliases=["mercadonegro"], description="Muestra el catálogo y horario del mercado negro.")
     async def blackmarket(self, ctx: commands.Context):
-        if not await self.enforce_prison_channel(ctx):
-            return
+        # Validación de prisión eliminada para permitir uso global
         open_now, remaining = market_seconds_remaining()
         embed = discord.Embed(
             title="🕶️ Mercado Negro",
@@ -2193,8 +2192,7 @@ class Economy(commands.Cog):
     @commands.hybrid_command(name="buyblackmarket", aliases=["bbm"], description="Compra un artículo del mercado negro.")
     @app_commands.describe(item="Artículo a comprar: sicario o ladron")
     async def buy_black_market(self, ctx: commands.Context, item: str):
-        if not await self.enforce_prison_channel(ctx):
-            return
+        # Validación de prisión eliminada para permitir uso global
         if not is_market_open():
             _, remaining = market_seconds_remaining()
             await ctx.send(embed=self.error_embed(f"El mercado negro está cerrado. Abrirá en {format_prison_duration(remaining)}."))
@@ -2239,6 +2237,7 @@ class Economy(commands.Cog):
             await ctx.send(embed=self.error_embed("Artículo no reconocido. Opciones válidas: `sicario`, `ladron`."))
             return
 
+        # Si el usuario es atrapado, la función jail_member lo enviará a la cárcel sin importar dónde esté
         if random.random() < BLACK_MARKET_JAIL_CHANCE:
             await self.jail_member(ctx.author, ctx.guild, BLACK_MARKET_JAIL_SECONDS, "Te atraparon haciendo negocios en el mercado negro.")
             await ctx.send(embed=self.error_embed(
@@ -2251,8 +2250,7 @@ class Economy(commands.Cog):
     @commands.hybrid_command(name="kill", description="Usa un sicario contra alguien (65% de éxito).")
     @app_commands.describe(target_user="La persona objetivo del sicario.")
     async def kill(self, ctx: commands.Context, target_user: discord.Member):
-        if not await self.enforce_prison_channel(ctx):
-            return
+        # Validación de prisión eliminada para permitir uso global
         if target_user.id == ctx.author.id:
             await ctx.send(embed=self.error_embed("No puedes contratar un sicario contra ti mismo."))
             return
