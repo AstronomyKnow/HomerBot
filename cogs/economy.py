@@ -853,7 +853,8 @@ class Economy(commands.Cog):
                 "**50%** de fallar: dentro de ese fallo, 50% recibes una multa de 10,000 y 50% no pasa nada.\n"
                 "Si la víctima tiene **Seguro**: 34% te bloquea el robo, 33% lo mitiga a la mitad, 33% no hace nada.\n"
                 "Si tienes un **contrato de sicario** activo contra la víctima, el robo es 100% garantizado e ignora el seguro.\n"
-                "**Consecuencias por monto robado**: ≥500,000 → 12h de prisión · ≥1,000,000 → 1 día · ≥100,000,000 → 100 días."
+                "**Consecuencias por monto robado**: ≥500,000 → 12h de prisión · ≥1,000,000 → 1 día · ≥100,000,000 → 100 días. "
+                "El dinero robado se lo queda el ladrón aunque termine en prisión."
             ),
             inline=False,
         )
@@ -942,13 +943,13 @@ class Economy(commands.Cog):
             name="🚔 ¿Cómo se llega a prisión?",
             value=(
                 "• Perder una demanda (`&sue`) contra ti: 75% de 1 día extra.\n"
-                "• Robar ≥500k/1M/100M: 12h / 1 día / 100 días.\n"
+                "• Robar ≥500k/1M/100M: 12h / 1 día / 100 días (el dinero robado se lo queda el ladrón).\n"
                 "• No pagar una multa en 1h: 1 día por multa acumulada.\n"
                 "• No pagar la nómina: 25% de 2 días.\n"
                 "• Ser atrapado en `&crime`: 10% de 1 día.\n"
                 "• Empleados de Robo descubiertos: 5% por ciclo, 5 días.\n"
                 "• Comprar en el Mercado Negro: 10% de 1 día.\n"
-                "• Que un sicario contratado en tu contra falle y te delaten: 35% del intento, 50% de esa mitad → 3 días.\n"
+                "• Que un sicario contratado en tu contra falle y te delaten: 50% del intento, 50% de esa mitad → 3 días.\n"
                 "• Un moderador te envía con `&sendprison`."
             ),
             inline=False,
@@ -964,7 +965,10 @@ class Economy(commands.Cog):
         cycle_hours = MARKET_CYCLE_SECONDS // 3600
         embed_market = discord.Embed(
             title="🕶️ Manual — Mercado Negro",
-            description=f"Abre cada **{cycle_hours} horas** y permanece abierto por **{open_hours} horas**, luego se cierra. Usa `&blackmarket` para ver el estado y `&buyblackmarket <item>` para comprar.",
+            description=(
+                f"Abre cada **{cycle_hours}h** y permanece abierto **{open_hours}h**.\n"
+                "Usable en el canal de la prisión **o** en el canal de economía (no requiere estar encarcelado)."
+            ),
             color=discord.Color.dark_purple() if hasattr(discord.Color, "dark_purple") else discord.Color.purple(),
         )
         embed_market.add_field(
@@ -974,8 +978,11 @@ class Economy(commands.Cog):
         )
         embed_market.add_field(
             name=f"🔫 sicario - {self.money(HITMAN_COST)}",
-            value="Úsalo con `&kill <usuario>`. **65%** de éxito: garantiza tu próximo `&steal` contra esa persona, ignorando su seguro. "
-                  "**35%** de fallo: 50% no pasa nada, 50% te descubren como autor intelectual → **3 días** de prisión.",
+            value=(
+                "`&kill <usuario>`: **50%** éxito (garantiza tu próximo `&steal` contra esa persona, ignora seguro). "
+                "**50%** fallo (mitad nada, mitad → 3 días de prisión).\n"
+                "⚠️ Se **consume en cada uso**, acierte o falle — hay que comprar otro para reintentar."
+            ),
             inline=False,
         )
         embed_market.add_field(
@@ -1002,8 +1009,13 @@ class Economy(commands.Cog):
             inline=False,
         )
         embed_commands.add_field(
-            name="⛓️ Prisión (canal exclusivo)",
-            value="`&horario` `&cellescape` `&bribe` `&escape` `&penalty [usuario]` `&blackmarket` `&buyblackmarket <item>` `&kill <usuario>`",
+            name="⛓️ Prisión (solo canal de la prisión)",
+            value="`&horario` `&cellescape` `&bribe` `&escape` `&penalty [usuario]`",
+            inline=False,
+        )
+        embed_commands.add_field(
+            name="🕶️ Mercado Negro (canal de prisión o de economía)",
+            value="`&blackmarket` `&buyblackmarket <item>` `&kill <usuario>`",
             inline=False,
         )
         if self.is_staff(ctx.author):
@@ -1827,6 +1839,16 @@ class Economy(commands.Cog):
         await ctx.send(embed=self.error_embed(f"Este comando solo se puede usar en {location}."), ephemeral=True)
         return False
 
+    async def enforce_market_channel(self, ctx) -> bool:
+        if ctx.channel.id in (PRISON_CHANNEL_ID, self.allowed_channel_id):
+            return True
+        prison_channel = ctx.guild.get_channel(PRISON_CHANNEL_ID) if ctx.guild else None
+        economy_channel = ctx.guild.get_channel(self.allowed_channel_id) if ctx.guild else None
+        locations = [c.mention for c in (prison_channel, economy_channel) if c]
+        location_text = " o ".join(locations) if locations else "el canal de la prisión o el canal de economía"
+        await ctx.send(embed=self.error_embed(f"Este comando solo se puede usar en {location_text}."), ephemeral=True)
+        return False
+
     async def log_prison_action(self, guild, action, target, moderator, reason, duration_text=None):
         channel = guild.get_channel(LOG_CHANNEL_ID)
         if not channel:
@@ -2160,7 +2182,8 @@ class Economy(commands.Cog):
 
     @commands.hybrid_command(name="blackmarket", aliases=["mercadonegro"], description="Muestra el catálogo y horario del mercado negro.")
     async def blackmarket(self, ctx: commands.Context):
-        # Validación de prisión eliminada para permitir uso global
+        if not await self.enforce_market_channel(ctx):
+            return
         open_now, remaining = market_seconds_remaining()
         embed = discord.Embed(
             title="🕶️ Mercado Negro",
@@ -2178,7 +2201,11 @@ class Economy(commands.Cog):
         )
         embed.add_field(
             name=f"🔫 sicario - {format_money(self.bot, HITMAN_COST)}",
-            value="Te permite usar `&kill @usuario` para garantizar el éxito de tu próximo `&steal` contra esa persona, ignorando su seguro.",
+            value=(
+                "Úsalo con `&kill @usuario`. **50%** de éxito: garantiza tu próximo `&steal` contra esa persona, "
+                "ignorando su seguro. Se **consume con cada uso, tanto si acierta como si falla** — "
+                "necesitas comprar uno nuevo para cada intento."
+            ),
             inline=False,
         )
         embed.add_field(
@@ -2192,7 +2219,8 @@ class Economy(commands.Cog):
     @commands.hybrid_command(name="buyblackmarket", aliases=["bbm"], description="Compra un artículo del mercado negro.")
     @app_commands.describe(item="Artículo a comprar: sicario o ladron")
     async def buy_black_market(self, ctx: commands.Context, item: str):
-        # Validación de prisión eliminada para permitir uso global
+        if not await self.enforce_market_channel(ctx):
+            return
         if not is_market_open():
             _, remaining = market_seconds_remaining()
             await ctx.send(embed=self.error_embed(f"El mercado negro está cerrado. Abrirá en {format_prison_duration(remaining)}."))
@@ -2237,7 +2265,6 @@ class Economy(commands.Cog):
             await ctx.send(embed=self.error_embed("Artículo no reconocido. Opciones válidas: `sicario`, `ladron`."))
             return
 
-        # Si el usuario es atrapado, la función jail_member lo enviará a la cárcel sin importar dónde esté
         if random.random() < BLACK_MARKET_JAIL_CHANCE:
             await self.jail_member(ctx.author, ctx.guild, BLACK_MARKET_JAIL_SECONDS, "Te atraparon haciendo negocios en el mercado negro.")
             await ctx.send(embed=self.error_embed(
@@ -2247,10 +2274,11 @@ class Economy(commands.Cog):
         else:
             await ctx.send(embed=self.success_embed(f"Compraste {purchased_label} sin que nadie se diera cuenta.", title="Compra exitosa"))
 
-    @commands.hybrid_command(name="kill", description="Usa un sicario contra alguien (65% de éxito).")
+    @commands.hybrid_command(name="kill", description="Usa un sicario contra alguien (50% de éxito). Se consume aunque falle.")
     @app_commands.describe(target_user="La persona objetivo del sicario.")
     async def kill(self, ctx: commands.Context, target_user: discord.Member):
-        # Validación de prisión eliminada para permitir uso global
+        if not await self.enforce_market_channel(ctx):
+            return
         if target_user.id == ctx.author.id:
             await ctx.send(embed=self.error_embed("No puedes contratar un sicario contra ti mismo."))
             return
@@ -2258,7 +2286,7 @@ class Economy(commands.Cog):
             await ctx.send(embed=self.error_embed("No tienes ningún sicario disponible. Cómpralo en el mercado negro con `&buyblackmarket sicario`."))
             return
 
-        if random.random() < 0.65:
+        if random.random() < 0.50:
             self.create_contract(ctx.author.id, target_user.id, ctx.guild.id)
             await ctx.send(embed=self.success_embed(
                 f"Tu sicario cumplió el encargo contra {target_user.mention}. Tu próximo `&steal` contra esta "
