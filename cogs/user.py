@@ -1,3 +1,5 @@
+import datetime
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -70,6 +72,90 @@ class UserCommands(commands.Cog):
         else:
             description = f"El apodo de {member.mention} ahora es **{nickname}**."
         await ctx.send(embed=success_embed(self.bot, description, title="Apodo actualizado"))
+
+    @commands.hybrid_command(
+        name="msg",
+        description="Envía un mensaje privado a alguien mediante un hilo privado (no por MD).",
+    )
+    @app_commands.describe(
+        target_user="Usuario que recibirá el mensaje.",
+        message="El contenido del mensaje.",
+    )
+    async def msg_prefix(self, ctx: commands.Context, target_user: discord.Member, *, message: str):
+        if ctx.interaction is not None:
+            await ctx.interaction.response.defer(ephemeral=True)
+
+        if target_user.id == ctx.author.id:
+            await ctx.send(embed=error_embed(self.bot, "No puedes enviarte un mensaje privado a ti mismo."), ephemeral=True)
+            return
+        if target_user.bot:
+            await ctx.send(embed=error_embed(self.bot, "No puedes enviarle un mensaje privado a un bot."), ephemeral=True)
+            return
+
+        channel = ctx.channel
+
+        # Borrar el mensaje original lo antes posible (solo aplica a &msg; los slash
+        # con respuesta ephemeral ya ocultan automáticamente el uso del comando).
+        if ctx.interaction is None:
+            try:
+                await ctx.message.delete()
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+
+        try:
+            thread = await channel.create_thread(
+                name="🔒 Mensaje privado",
+                type=discord.ChannelType.private_thread,
+                auto_archive_duration=60,
+                invitable=False,
+                reason=f"Mensaje privado de {ctx.author} para {target_user}",
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            error_msg = error_embed(
+                self.bot,
+                "No pude crear un hilo privado en este canal. Verifica que tenga el permiso de "
+                "'Crear hilos privados' y que el servidor los soporte.",
+            )
+            if ctx.interaction is not None:
+                await ctx.send(embed=error_msg, ephemeral=True)
+            else:
+                try:
+                    await channel.send(embed=error_msg, delete_after=8)
+                except discord.HTTPException:
+                    pass
+            return
+
+        try:
+            await thread.add_user(ctx.author)
+            await thread.add_user(target_user)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+        embed = discord.Embed(
+            title="✉️ Mensaje privado",
+            description=message,
+            color=discord.Color.gold(),
+        )
+        embed.set_author(name=str(ctx.author), icon_url=ctx.author.display_avatar.url)
+        embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        try:
+            await thread.send(content=target_user.mention, embed=embed)
+        except (discord.Forbidden, discord.HTTPException):
+            error_msg = error_embed(self.bot, "Creé el hilo pero no pude enviar el mensaje dentro de él.")
+            if ctx.interaction is not None:
+                await ctx.send(embed=error_msg, ephemeral=True)
+            return
+
+        if ctx.interaction is not None:
+            await ctx.send(
+                embed=success_embed(
+                    self.bot,
+                    f"Mensaje enviado a {target_user.mention} en un hilo privado: {thread.mention}",
+                    title="Enviado",
+                ),
+                ephemeral=True,
+            )
 
 
 async def setup(bot):
