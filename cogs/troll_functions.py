@@ -5,8 +5,8 @@ from discord.ext import commands
 
 
 # ID del usuario al que el bot reacciona con 🐒 en absolutamente todos sus mensajes.
-TROLL_TARGET_USER_ID = 1119121229509570660
-MONKEY_UNICODE_EMOJI = "🐒"
+TROLL_TARGET_USER_ID = 1418689819227193397
+MONKEY_UNICODE_EMOJI = "🇮🇱"
 
 # IDs reales de los emojis personalizados del servidor.
 PERU_MONKEY_EMOJI_ID = 1527109146334204047  # :peru_monkey:
