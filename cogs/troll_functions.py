@@ -45,7 +45,7 @@ class TrollFunctions(commands.Cog):
         # Reacciona con 🐒 a absolutamente todos los mensajes de este usuario específico.
         if message.author.id == TROLL_TARGET_USER_ID:
             try:
-                await message.add_reaction(ISRAEL_UNICODE_EMOJI, MONKEY_UNICODE_EMOJI, FEMBOY_UNICODE_EMOJI)
+                await message.add_reaction(ISRAEL_UNICODE_EMOJI)
             except (discord.Forbidden, discord.HTTPException):
                 pass
 
